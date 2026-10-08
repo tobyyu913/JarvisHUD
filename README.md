@@ -1,35 +1,103 @@
-# JarvisHUD
+<p align="center">
+  <img src="docs/hud.png" width="820" alt="JarvisHUD chat panel">
+</p>
 
-A macOS menu bar app that replaces Siri with a J.A.R.V.I.S.-style HUD, backed by Gemini, plus a full-screen telemetry overlay with live sensors and fan control.
+<h1 align="center">JarvisHUD</h1>
 
-## Features
+<p align="center">
+  Replace Siri on your Mac with an Iron Man <b>J.A.R.V.I.S.</b> style assistant.<br>
+  Gemini-powered chat, a live telemetry overlay with real sensor data, and fan control. All from the menu bar.
+</p>
 
-- **⌥ Space / F5** — summon the HUD in the top-right corner: a spinning Iron Man ring, a panel that expands leftward, and a text field. Ask anything; JARVIS answers in character (dry British wit, "sir", short status-readout replies).
-- **⌃⌥ Space** — toggle the telemetry overlay around the screen edges: per-core CPU, memory, swap, disk, load, top processes, network throughput, battery, and SMC sensors (both fans in rpm, CPU/GPU/battery/SSD/ambient temperatures). Adapts to full-screen Spaces.
-- **Fan control** — from the ◎ menu (Automatic / fixed rpm / Maximum) or just ask JARVIS ("spin the fans up to 4000"). Uses a small setuid helper installed once with an admin prompt. Fans revert to automatic on quit.
-- Live Mac telemetry is attached to every Gemini request, so "how's the machine running?" gets real numbers.
+---
 
-## Build
+## What it does
+
+| Shortcut | Action |
+|---|---|
+| **⌥ Space** or **F5** | Summon JARVIS. A glowing ring spins up in the top-right corner, a panel expands leftward, and you type. Press again or hit Esc to dismiss. |
+| **⌃⌥ Space** | Toggle the telemetry overlay. Live stats are painted around the edges of the screen. |
+| **◎ menu** | API key, model, fan control, clear conversation, quit. |
+
+### JARVIS, in character
+
+Replies come back the way he talks in the films: calm British butler, dry deadpan wit, "sir" when it fits, and short status-readout answers. Every question also carries a snapshot of your Mac's live telemetry, so you can just ask:
+
+> *How's the machine running?*
+> *Are the fans okay? Spin them up to 4000.*
+> *What's eating my CPU?*
+
+### Telemetry overlay
+
+<p align="center">
+  <img src="docs/telemetry.png" width="900" alt="JarvisHUD telemetry overlay">
+</p>
+
+Click-through, refreshed every second, and it re-fits itself when you enter or leave a full-screen app.
+
+- **CPU** total plus every core
+- **Memory, swap, disk, load average**
+- **Top processes** by CPU
+- **Thermal and fans** read straight from the SMC: each fan in rpm against its maximum, plus CPU, GPU, battery, SSD, ambient, PMU and palm-rest temperatures
+- **Network** down and up throughput, **battery** percent and time remaining
+- **System** chip, macOS version, uptime, thermal pressure, IP, hostname
+- Bars turn amber past 60 percent and red past 85 percent
+
+### Fan control
+
+Apple Silicon fans can only be set as root, so JarvisHUD ships a tiny helper binary (`jarvisfan`) that you install once from the menu with an admin password prompt. After that:
+
+- **◎ → Fans** gives you Automatic, fixed speeds, or Maximum
+- Or ask JARVIS in plain English. He confirms in character and the app executes it.
+- The overlay shows `[AUTO]` or `[MANUAL]` in the thermal card title
+- Fans always return to automatic when the app quits
+
+Speeds are clamped to the fan's own min and max as reported by the SMC.
+
+## Install
+
+### From the DMG
+
+1. Download `JarvisHUD.dmg` from the [latest release](../../releases/latest).
+2. Open it and drag **JarvisHUD** to **Applications**.
+3. Launch it. The build is signed with a personal developer certificate, not notarized, so the first time macOS may block it: open **System Settings → Privacy & Security** and click **Open Anyway**.
+
+### From source
 
 ```sh
-./build.sh
+git clone https://github.com/tobyyu913/JarvisHUD.git
+cd JarvisHUD
+./build.sh          # builds build/JarvisHUD.app
+./make-dmg.sh       # optional: also packages build/JarvisHUD.dmg
 open build/JarvisHUD.app
 ```
 
-Requires Xcode command line tools. Edit the `SIGN` identity in `build.sh` to your own Apple Development certificate (ad-hoc signing works too, but macOS will re-ask for permissions after every rebuild).
+Needs the Xcode command line tools. Edit `SIGN` in `build.sh` to your own signing identity. Ad-hoc signing (`-`) works too, but macOS will re-ask for permissions after every rebuild because the app's identity changes.
 
-## Setup
+## First-run setup
 
-1. Grant **Accessibility** and **Input Monitoring** when prompted, then relaunch.
-2. ◎ menu → *Set Gemini API Key…* (from aistudio.google.com/apikey). Default model: `gemini-2.5-flash`.
-3. Optional: ◎ → Fans → *Install Fan Control Helper…*
-4. If you use F5, set Siri's keyboard shortcut to Off in System Settings so they don't fight.
+1. **Permissions.** Grant **Accessibility** and **Input Monitoring** when prompted, then quit and relaunch from the ◎ menu. This is what lets the app see the hotkey and swallow it before Siri does.
+2. **Gemini key.** ◎ → *Set Gemini API Key…* and paste a key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey). The default model is `gemini-2.5-flash`; change it from the same menu.
+3. **Fans (optional).** ◎ → Fans → *Install Fan Control Helper…*
+4. **Siri.** If you want F5 to replace Siri completely, set Siri's keyboard shortcut to *Off* in System Settings so the two don't fight.
 
-Tested on an M4 Max MacBook Pro, macOS 27. Temperature key names vary by chip; see `tempKeys` in `Sources/Stats.swift`.
+The API key is stored in the app's own preferences on your Mac and never leaves it except in requests to Google's Gemini API.
 
-## Layout
+## Compatibility
 
-- `Sources/main.swift` — app, hotkeys, chat HUD, Gemini client, JARVIS persona prompt, fan control bridge
-- `Sources/Overlay.swift` — edge telemetry overlay
-- `Sources/Stats.swift` — SMC reader/writer and system metrics
-- `Helper/main.swift` — `jarvisfan` setuid helper
+Built and tested on an M4 Max MacBook Pro running macOS 27. It should work on any Apple Silicon Mac, but SMC temperature key names differ between chips. If some sensors are missing or look wrong on your machine, adjust the `tempKeys` list in `Sources/Stats.swift`.
+
+## Project layout
+
+```
+Sources/main.swift      app, hotkeys, chat HUD, Gemini client, JARVIS persona, fan-control bridge
+Sources/Overlay.swift   edge telemetry overlay and full-screen handling
+Sources/Stats.swift     SMC reader/writer, CPU/memory/disk/network/battery metrics
+Helper/main.swift       jarvisfan setuid helper
+build.sh                compile and sign the .app
+make-dmg.sh             build and package the .dmg
+```
+
+## Credits
+
+Visual style inspired by the J.A.R.V.I.S. interfaces in Marvel's Iron Man films. Not affiliated with Marvel, Apple or Google.

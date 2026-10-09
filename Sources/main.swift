@@ -41,35 +41,107 @@ enum FanControl {
     }
 }
 
-// MARK: - Gemini
-enum Gemini {
-    static var apiKey: String { UserDefaults.standard.string(forKey: "geminiKey") ?? "" }
-    static var model: String { UserDefaults.standard.string(forKey: "geminiModel") ?? "gemini-2.5-flash" }
-    static var history: [[String: Any]] = []
+// MARK: - AI providers
+struct Preset { let name: String, kind: AI.Kind, base: String, model: String, keyURL: String }
+enum AI {
+    enum Kind: String { case openai, gemini, anthropic }
+    static let presets: [Preset] = [
+        Preset(name: "Groq",       kind: .openai,    base: "https://api.groq.com/openai/v1",                         model: "llama-3.3-70b-versatile", keyURL: "console.groq.com/keys"),
+        Preset(name: "Gemini",     kind: .gemini,    base: "https://generativelanguage.googleapis.com/v1beta",      model: "gemini-2.5-flash",        keyURL: "aistudio.google.com/apikey"),
+        Preset(name: "OpenAI",     kind: .openai,    base: "https://api.openai.com/v1",                              model: "gpt-4o-mini",             keyURL: "platform.openai.com/api-keys"),
+        Preset(name: "Anthropic",  kind: .anthropic, base: "https://api.anthropic.com/v1",                           model: "claude-opus-5-5",         keyURL: "console.anthropic.com"),
+        Preset(name: "OpenRouter", kind: .openai,    base: "https://openrouter.ai/api/v1",                           model: "meta-llama/llama-3.3-70b-instruct", keyURL: "openrouter.ai/keys"),
+        Preset(name: "xAI",        kind: .openai,    base: "https://api.x.ai/v1",                                    model: "grok-3-mini",             keyURL: "console.x.ai"),
+        Preset(name: "Mistral",    kind: .openai,    base: "https://api.mistral.ai/v1",                              model: "mistral-small-latest",    keyURL: "console.mistral.ai"),
+        Preset(name: "Ollama (local)",    kind: .openai, base: "http://localhost:11434/v1",                          model: "llama3.1",                keyURL: "no key needed"),
+        Preset(name: "LM Studio (local)", kind: .openai, base: "http://localhost:1234/v1",                           model: "local-model",             keyURL: "no key needed"),
+        Preset(name: "Custom (OpenAI-compatible)", kind: .openai, base: "https://your-host/v1",                      model: "model-name",              keyURL: ""),
+    ]
+    static let d = UserDefaults.standard
+    static var kind: Kind { Kind(rawValue: d.string(forKey: "aiKind") ?? "") ?? .openai }
+    static var base: String { d.string(forKey: "aiBase") ?? presets[0].base }
+    static var model: String { d.string(forKey: "aiModel") ?? presets[0].model }
+    static var apiKey: String { d.string(forKey: "aiKey") ?? "" }
+    static var providerName: String { d.string(forKey: "aiName") ?? presets[0].name }
+    static func save(name: String, kind: Kind, base: String, model: String, key: String) {
+        d.set(name, forKey: "aiName"); d.set(kind.rawValue, forKey: "aiKind"); d.set(base, forKey: "aiBase"); d.set(model, forKey: "aiModel"); d.set(key, forKey: "aiKey")
+    }
+    /// role: "user" | "assistant", plain text
+    static var history: [(role: String, text: String)] = []
 
     static func ask(_ prompt: String, done: @escaping (String) -> Void) {
-        guard !apiKey.isEmpty else { done("No API key. Use the menu bar ◎ → Set Gemini API Key…"); return }
-        history.append(["role": "user", "parts": [["text": prompt]]])
-        let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(apiKey)")!
-        var req = URLRequest(url: url); req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "system_instruction": ["parts": [["text": JARVIS_PROMPT + "\n\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary]]],
-            "contents": history
-        ]
+        let localhost = base.contains("localhost") || base.contains("127.0.0.1")
+        guard !apiKey.isEmpty || localhost else { done("No API key, sir. Use the menu bar ◎ → AI Provider…"); return }
+        history.append(("user", prompt))
+        let system = JARVIS_PROMPT + "\n\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
+        let b = base.hasSuffix("/") ? String(base.dropLast()) : base
+        var req: URLRequest; var body: [String: Any]
+        switch kind {
+        case .openai:
+            req = URLRequest(url: URL(string: b + "/chat/completions")!)
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            body = ["model": model, "messages": [["role": "system", "content": system]] + history.map { ["role": $0.role, "content": $0.text] }, "max_tokens": 1024]
+        case .anthropic:
+            req = URLRequest(url: URL(string: b + "/messages")!)
+            req.setValue(apiKey, forHTTPHeaderField: "x-api-key"); req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            body = ["model": model, "max_tokens": 1024, "system": system, "messages": history.map { ["role": $0.role, "content": $0.text] }]
+        case .gemini:
+            req = URLRequest(url: URL(string: b + "/models/\(model):generateContent?key=\(apiKey)")!)
+            body = ["system_instruction": ["parts": [["text": system]]],
+                    "contents": history.map { ["role": $0.role == "assistant" ? "model" : "user", "parts": [["text": $0.text]]] }]
+        }
+        req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: req) { data, _, err in
             var text = "Error: \(err?.localizedDescription ?? "no response")"
             if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
-                if let c = ((j["candidates"] as? [[String: Any]])?.first?["content"] as? [String: Any]),
-                   let p = (c["parts"] as? [[String: Any]])?.first?["text"] as? String {
-                    text = p.trimmingCharacters(in: .whitespacesAndNewlines)
-                    history.append(["role": "model", "parts": [["text": text]]])
-                } else if let e = j["error"] as? [String: Any], let m = e["message"] as? String { text = "Error: \(m)" }
+                if let t = parse(j) { text = t.trimmingCharacters(in: .whitespacesAndNewlines); history.append(("assistant", text)) }
+                else if let e = j["error"] as? [String: Any], let m = e["message"] as? String { text = "Error: \(m)" }
+                else if let e = j["error"] as? String { text = "Error: \(e)" }
+                else { text = "Error: unexpected response from \(providerName)" }
             }
             DispatchQueue.main.async { done(text) }
         }.resume()
     }
+    static func parse(_ j: [String: Any]) -> String? {
+        switch kind {
+        case .openai: return ((j["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String
+        case .anthropic: return (j["content"] as? [[String: Any]])?.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined()
+        case .gemini:
+            guard let c = (j["candidates"] as? [[String: Any]])?.first?["content"] as? [String: Any] else { return nil }
+            return (c["parts"] as? [[String: Any]])?.first?["text"] as? String
+        }
+    }
+}
+
+// MARK: - Provider settings dialog
+final class ProviderDialog: NSObject {
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+    let base = NSTextField(frame: .zero), model = NSTextField(frame: .zero), key = NSSecureTextField(frame: .zero), hint = NSTextField(labelWithString: "")
+    func run() {
+        let a = NSAlert(); a.messageText = "AI Provider"; a.informativeText = "Pick a preset, or choose Custom for any OpenAI-compatible endpoint."
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 150))
+        AI.presets.forEach { popup.addItem(withTitle: $0.name) }
+        popup.selectItem(withTitle: AI.providerName); popup.target = self; popup.action = #selector(changed)
+        func row(_ label: String, _ f: NSTextField, _ y: CGFloat) {
+            let l = NSTextField(labelWithString: label); l.frame = NSRect(x: 0, y: y, width: 70, height: 22); l.alignment = .right; v.addSubview(l)
+            f.frame = NSRect(x: 78, y: y, width: 282, height: 22); v.addSubview(f)
+        }
+        popup.frame.origin = CGPoint(x: 78, y: 124); v.addSubview(popup)
+        let pl = NSTextField(labelWithString: "Provider"); pl.frame = NSRect(x: 0, y: 126, width: 70, height: 22); pl.alignment = .right; v.addSubview(pl)
+        row("Base URL", base, 92); row("Model", model, 64); row("API key", key, 36)
+        hint.frame = NSRect(x: 78, y: 8, width: 282, height: 20); hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor; v.addSubview(hint)
+        base.stringValue = AI.base; model.stringValue = AI.model; key.stringValue = AI.apiKey; updateHint()
+        a.accessoryView = v; a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn {
+            let p = AI.presets[popup.indexOfSelectedItem]
+            AI.save(name: p.name, kind: p.kind, base: base.stringValue, model: model.stringValue, key: key.stringValue)
+            AI.history = []
+        }
+    }
+    @objc func changed() { let p = AI.presets[popup.indexOfSelectedItem]; base.stringValue = p.base; model.stringValue = p.model; updateHint() }
+    func updateHint() { let p = AI.presets[popup.indexOfSelectedItem]; hint.stringValue = p.keyURL.isEmpty ? "" : "Get a key: \(p.keyURL)" }
 }
 
 // MARK: - HUD View
@@ -208,7 +280,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
             let q = input.stringValue.trimmingCharacters(in: .whitespaces); guard !q.isEmpty else { return true }
             input.stringValue = ""; append("YOU ▸", q); append("JARVIS ▸", "…")
             title.string = "J.A.R.V.I.S.  — THINKING"
-            Gemini.ask(q) { raw in
+            AI.ask(q) { raw in
                 var r = raw
                 if let m = r.range(of: #"\[FAN:(AUTO|[0-9]+)\]"#, options: [.regularExpression, .caseInsensitive]) {
                     let tag = r[m].dropFirst(5).dropLast().uppercased(); r.removeSubrange(m); r = r.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -260,6 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "◎"
+        if let k = UserDefaults.standard.string(forKey: "geminiKey"), AI.d.string(forKey: "aiKey") == nil {
+            AI.save(name: "Gemini", kind: .gemini, base: AI.presets[1].base, model: UserDefaults.standard.string(forKey: "geminiModel") ?? "gemini-2.5-flash", key: k)
+        }
         buildMenu()
         // Edit menu so Cmd+V/C/X/A work in dialogs
         let main = NSMenu(); let editItem = NSMenuItem(); main.addItem(editItem)
@@ -286,8 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fan.addItem(withTitle: "Maximum", action: #selector(fanMax), keyEquivalent: "")
         fan.addItem(.separator())
         fan.addItem(withTitle: FanControl.installed ? "Helper installed ✓" : "Install Fan Control Helper…", action: #selector(fanInstall), keyEquivalent: "")
-        m.addItem(withTitle: "Set Gemini API Key…", action: #selector(setKey), keyEquivalent: "")
-        m.addItem(withTitle: "Set Model… (\(Gemini.model))", action: #selector(setModel), keyEquivalent: "")
+        m.addItem(withTitle: "AI Provider…  (\(AI.providerName) · \(AI.model))", action: #selector(setProvider), keyEquivalent: "")
         m.addItem(withTitle: "Clear Conversation", action: #selector(clear), keyEquivalent: "")
         m.addItem(.separator())
         m.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -302,9 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         return a.runModal() == .alertFirstButtonReturn ? tf.stringValue : nil
     }
-    @objc func setKey() { if let k = prompt("Gemini API key (aistudio.google.com/apikey)", "", secure: true) { UserDefaults.standard.set(k, forKey: "geminiKey") } }
-    @objc func setModel() { if let m = prompt("Gemini model", Gemini.model) { UserDefaults.standard.set(m, forKey: "geminiModel") } }
-    @objc func clear() { Gemini.history = []; panel?.hud.output.string = "" }
+    let providerDialog = ProviderDialog()
+    @objc func setProvider() { providerDialog.run(); buildMenu() }
+    @objc func clear() { AI.history = []; panel?.hud.output.string = "" }
 
     func installTap() {
         AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)

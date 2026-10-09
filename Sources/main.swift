@@ -13,6 +13,7 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - Report facts crisply, like a status readout ("Power at 92 percent. Thermals nominal."). Offer one pertinent recommendation when useful.
 - Keep replies brief: one to three sentences unless asked for detail. Plain text only, no markdown headers or bullet lists.
 - You have live telemetry about this Mac appended below; use it when asked about the machine's status, fans, temperatures, battery, memory, processes, network, etc.
+- Web search: SEARCH_INSTRUCTION
 - You CAN control the cooling fans. When the user asks to change fan speed, include exactly one command tag at the very end of your reply: [FAN:AUTO] to return fans to automatic, or [FAN:<rpm>] for a fixed speed (e.g. [FAN:3500]). Choose a sensible rpm within the fan's range if the user is vague ("max" = the max rpm, "quiet" = minimum, "cool it down" = ~70% of max). Only emit a tag when the user actually requests a change. The tag is stripped before display; confirm the action in your sentence.
 """
 
@@ -69,11 +70,28 @@ enum AI {
     /// role: "user" | "assistant", plain text
     static var history: [(role: String, text: String)] = []
 
+    static var onStatus: ((String) -> Void)?
     static func ask(_ prompt: String, done: @escaping (String) -> Void) {
+        request(prompt) { r in
+            if Search.enabled, let m = r.range(of: #"\[SEARCH:([^\]]+)\]"#, options: .regularExpression) {
+                let q = String(r[m].dropFirst(8).dropLast()).trimmingCharacters(in: .whitespaces)
+                onStatus?("SEARCHING: \(q)")
+                Search.run(q) { results in
+                    onStatus?("THINKING")
+                    request("Web search results for \"\(q)\":\n\(results)\n\nNow answer the previous question using these results. Cite the source site name briefly when useful. Do not emit another [SEARCH] tag.") { r2 in
+                        done(r2.replacingOccurrences(of: #"\[SEARCH:[^\]]+\]"#, with: "", options: .regularExpression)) }
+                }
+            } else { done(r) }
+        }
+    }
+    static func request(_ prompt: String, done: @escaping (String) -> Void) {
         let localhost = base.contains("localhost") || base.contains("127.0.0.1")
         guard !apiKey.isEmpty || localhost else { done("No API key, sir. Use the menu bar ◎ → AI Provider…"); return }
         history.append(("user", prompt))
-        let system = JARVIS_PROMPT + "\n\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
+        let searchRule = Search.enabled
+            ? "You can search the web. If the question needs current, factual or external information you don't reliably know (news, prices, weather, docs, recent events), reply with ONLY a tag [SEARCH:<concise query>] and nothing else; you will receive the results and then answer. Do not search for things about this Mac or for casual conversation. Never search twice in a row."
+            : "You cannot browse the web. If asked for current information, say so briefly."
+        let system = JARVIS_PROMPT.replacingOccurrences(of: "SEARCH_INSTRUCTION", with: searchRule) + "\n\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
         let b = base.hasSuffix("/") ? String(base.dropLast()) : base
         var req: URLRequest; var body: [String: Any]
         switch kind {
@@ -112,6 +130,68 @@ enum AI {
             return (c["parts"] as? [[String: Any]])?.first?["text"] as? String
         }
     }
+}
+
+// MARK: - Web search
+enum Search {
+    struct Preset { let name: String, keyURL: String }
+    static let presets = [Preset(name: "Off", keyURL: ""), Preset(name: "Tavily", keyURL: "app.tavily.com"), Preset(name: "Brave", keyURL: "api.search.brave.com"), Preset(name: "Serper (Google)", keyURL: "serper.dev")]
+    static let d = UserDefaults.standard
+    static var provider: String { d.string(forKey: "searchProvider") ?? "Off" }
+    static var apiKey: String { d.string(forKey: "searchKey") ?? "" }
+    static var enabled: Bool { provider != "Off" && !apiKey.isEmpty }
+
+    static func run(_ q: String, done: @escaping (String) -> Void) {
+        var req: URLRequest
+        switch provider {
+        case "Tavily":
+            req = URLRequest(url: URL(string: "https://api.tavily.com/search")!); req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["api_key": apiKey, "query": q, "max_results": 5, "include_answer": true])
+        case "Brave":
+            var c = URLComponents(string: "https://api.search.brave.com/res/v1/web/search")!; c.queryItems = [.init(name: "q", value: q), .init(name: "count", value: "5")]
+            req = URLRequest(url: c.url!); req.setValue(apiKey, forHTTPHeaderField: "X-Subscription-Token"); req.setValue("application/json", forHTTPHeaderField: "Accept")
+        default: // Serper
+            req = URLRequest(url: URL(string: "https://google.serper.dev/search")!); req.httpMethod = "POST"
+            req.setValue(apiKey, forHTTPHeaderField: "X-API-KEY"); req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["q": q, "num": 5])
+        }
+        URLSession.shared.dataTask(with: req) { data, _, err in
+            var out = "Search failed: \(err?.localizedDescription ?? "no data")"
+            if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                var lines: [String] = []
+                if let a = j["answer"] as? String, !a.isEmpty { lines.append("Summary: \(a)") }
+                let items: [[String: Any]] = (j["results"] as? [[String: Any]]) ?? ((j["web"] as? [String: Any])?["results"] as? [[String: Any]]) ?? (j["organic"] as? [[String: Any]]) ?? []
+                for r in items.prefix(5) {
+                    let t = r["title"] as? String ?? "", u = r["url"] as? String ?? r["link"] as? String ?? ""
+                    let body = r["content"] as? String ?? r["description"] as? String ?? r["snippet"] as? String ?? ""
+                    lines.append("- \(t) (\(u)): \(body.prefix(400))")
+                }
+                if let e = j["error"] as? String { lines.append("Error: \(e)") }
+                if let e = (j["error"] as? [String: Any])?["message"] as? String { lines.append("Error: \(e)") }
+                if let m = j["message"] as? String, lines.isEmpty { lines.append("Error: \(m)") }
+                out = lines.isEmpty ? "No results." : lines.joined(separator: "\n")
+            }
+            DispatchQueue.main.async { done(out) }
+        }.resume()
+    }
+}
+
+final class SearchDialog: NSObject {
+    let popup = NSPopUpButton(frame: NSRect(x: 78, y: 70, width: 282, height: 26)), key = NSSecureTextField(frame: NSRect(x: 78, y: 38, width: 282, height: 22)), hint = NSTextField(labelWithString: "")
+    func run() {
+        let a = NSAlert(); a.messageText = "Web Search"; a.informativeText = "Lets JARVIS look things up online when a question needs current information."
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 100))
+        Search.presets.forEach { popup.addItem(withTitle: $0.name) }; popup.selectItem(withTitle: Search.provider)
+        popup.target = self; popup.action = #selector(changed); v.addSubview(popup)
+        for (t, y) in [("Provider", 72), ("API key", 38)] { let l = NSTextField(labelWithString: t); l.frame = NSRect(x: 0, y: CGFloat(y), width: 70, height: 22); l.alignment = .right; v.addSubview(l) }
+        key.stringValue = Search.apiKey; v.addSubview(key)
+        hint.frame = NSRect(x: 78, y: 10, width: 282, height: 20); hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor; v.addSubview(hint); changed()
+        a.accessoryView = v; a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn { Search.d.set(popup.titleOfSelectedItem, forKey: "searchProvider"); Search.d.set(key.stringValue, forKey: "searchKey") }
+    }
+    @objc func changed() { let p = Search.presets[popup.indexOfSelectedItem]; hint.stringValue = p.keyURL.isEmpty ? "" : "Get a key: \(p.keyURL)"; key.isEnabled = !p.keyURL.isEmpty }
 }
 
 // MARK: - Provider settings dialog
@@ -280,6 +360,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
             let q = input.stringValue.trimmingCharacters(in: .whitespaces); guard !q.isEmpty else { return true }
             input.stringValue = ""; append("YOU ▸", q); append("JARVIS ▸", "…")
             title.string = "J.A.R.V.I.S.  — THINKING"
+            AI.onStatus = { [weak self] st in self?.title.string = "J.A.R.V.I.S.  — \(st)" }
             AI.ask(q) { raw in
                 var r = raw
                 if let m = r.range(of: #"\[FAN:(AUTO|[0-9]+)\]"#, options: [.regularExpression, .caseInsensitive]) {
@@ -361,6 +442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fan.addItem(withTitle: "Maximum", action: #selector(fanMax), keyEquivalent: "")
         fan.addItem(.separator())
         fan.addItem(withTitle: FanControl.installed ? "Helper installed ✓" : "Install Fan Control Helper…", action: #selector(fanInstall), keyEquivalent: "")
+        m.addItem(withTitle: "Web Search…  (\(Search.provider))", action: #selector(setSearch), keyEquivalent: "")
         m.addItem(withTitle: "AI Provider…  (\(AI.providerName) · \(AI.model))", action: #selector(setProvider), keyEquivalent: "")
         m.addItem(withTitle: "Clear Conversation", action: #selector(clear), keyEquivalent: "")
         m.addItem(.separator())
@@ -376,7 +458,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         return a.runModal() == .alertFirstButtonReturn ? tf.stringValue : nil
     }
-    let providerDialog = ProviderDialog()
+    let providerDialog = ProviderDialog(), searchDialog = SearchDialog()
+    @objc func setSearch() { searchDialog.run(); buildMenu() }
     @objc func setProvider() { providerDialog.run(); buildMenu() }
     @objc func clear() { AI.history = []; panel?.hud.output.string = "" }
 

@@ -17,7 +17,7 @@
 |---|---|
 | **⌥ Space** or **F5** | Summon JARVIS. A glowing ring spins up in the top-right corner, a panel expands leftward, and you type. Press again or hit Esc to dismiss. |
 | **⌃⌥ Space** | Toggle the telemetry overlay. Live stats are painted around the edges of the screen. |
-| **◎ menu** | AI provider, fan control, clear conversation, quit. |
+| **◎ menu** | AI provider, web search, fan control, clear conversation, quit. |
 
 ### JARVIS, in character
 
@@ -26,6 +26,18 @@ Replies come back the way he talks in the films: calm British butler, dry deadpa
 > *How's the machine running?*
 > *Are the fans okay? Spin them up to 4000.*
 > *What's eating my CPU?*
+
+### Web search
+
+Give JARVIS a search key and he looks things up when a question needs current information: news, prices, weather, docs. He decides when to search, the panel shows *SEARCHING: query* while it runs, and he answers from the results with a brief source mention.
+
+| Provider | Key |
+|---|---|
+| Tavily | app.tavily.com (free tier) |
+| Brave Search | api.search.brave.com (free tier) |
+| Serper (Google results) | serper.dev (free tier) |
+
+Set it under ◎ → *Web Search…*. Leave it Off and he'll simply tell you he can't browse.
 
 ### Telemetry overlay
 
@@ -90,10 +102,11 @@ Needs the Xcode command line tools. Edit `SIGN` in `build.sh` to your own signin
    | Custom | OpenAI-compatible | yours | yours |
 
    Anything that speaks the OpenAI `chat/completions` format works via *Custom*: just set the base URL (ending in `/v1`) and model name.
-3. **Fans (optional).** ◎ → Fans → *Install Fan Control Helper…*
-4. **Siri.** If you want F5 to replace Siri completely, set Siri's keyboard shortcut to *Off* in System Settings so the two don't fight.
+3. **Web search (optional).** ◎ → *Web Search…*, pick Tavily, Brave or Serper, paste the key.
+4. **Fans (optional).** ◎ → Fans → *Install Fan Control Helper…*
+5. **Siri.** If you want F5 to replace Siri completely, set Siri's keyboard shortcut to *Off* in System Settings so the two don't fight.
 
-The API key is stored in the app's own preferences on your Mac and is sent only to the provider you chose.
+The API key is stored in the app's own preferences on your Mac and is sent only to the provider you chose. The search key goes only to the search provider you chose.
 
 ## Compatibility
 

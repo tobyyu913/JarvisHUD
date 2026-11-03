@@ -13,8 +13,11 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - Report facts crisply, like a status readout ("Power at 92 percent. Thermals nominal."). Offer one pertinent recommendation when useful.
 - Keep replies brief: one to three sentences unless asked for detail. Plain text only, no markdown headers or bullet lists.
 - You have live telemetry about this Mac appended below; use it when asked about the machine's status, fans, temperatures, battery, memory, processes, network, etc.
-- Web search: SEARCH_INSTRUCTION
-- You CAN control the cooling fans. When the user asks to change fan speed, include exactly one command tag at the very end of your reply: [FAN:AUTO] to return fans to automatic, or [FAN:<rpm>] for a fixed speed (e.g. [FAN:3500]). Choose a sensible rpm within the fan's range if the user is vague ("max" = the max rpm, "quiet" = minimum, "cool it down" = ~70% of max). Only emit a tag when the user actually requests a change. The tag is stripped before display; confirm the action in your sentence.
+- SEARCH_INSTRUCTION
+- You have been LISTENING all day through the microphone (on-device). Everything heard is logged with timestamps for 14 days. If asked what happened today, what someone said, or where something was left, use the recall tool to search the log before answering; the last 30 minutes may already be attached below. Treat the log as possibly garbled speech-to-text.
+- When the user asks you to remember something (where they left the keys, a fact, a reminder), use the remember tool. Your remembered notes are listed below under "Remembered notes"; use them to answer.
+- Fans: use the fans tool. "max" = the fan's max rpm, "quiet" = minimum, "cool it down" = ~70% of max.
+TOOL_DOC
 """
 
 // MARK: - Fan control (via setuid helper)
@@ -70,18 +73,28 @@ enum AI {
     /// role: "user" | "assistant", plain text
     static var history: [(role: String, text: String)] = []
 
+    static var spoken = false
     static var onStatus: ((String) -> Void)?
-    static func ask(_ prompt: String, done: @escaping (String) -> Void) {
+    static var onStep: ((String) -> Void)?
+    static func ask(_ prompt: String, done: @escaping (String) -> Void) { step(prompt, n: 0, done: done) }
+    private static func step(_ prompt: String, n: Int, done: @escaping (String) -> Void) {
         request(prompt) { r in
-            if Search.enabled, let m = r.range(of: #"\[SEARCH:([^\]]+)\]"#, options: .regularExpression) {
-                let q = String(r[m].dropFirst(8).dropLast()).trimmingCharacters(in: .whitespaces)
-                onStatus?("SEARCHING: \(q)")
-                Search.run(q) { results in
-                    onStatus?("THINKING")
-                    request("Web search results for \"\(q)\":\n\(results)\n\nNow answer the previous question using these results. Cite the source site name briefly when useful. Do not emit another [SEARCH] tag.") { r2 in
-                        done(r2.replacingOccurrences(of: #"\[SEARCH:[^\]]+\]"#, with: "", options: .regularExpression)) }
-                }
-            } else { done(r) }
+            guard n < Agent.maxSteps, let (name, args, range) = Agent.parse(r) else {
+                done(r.replacingOccurrences(of: #"\[TOOL:[^\]]+\]\s*\{[^\n]*\}?"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)); return
+            }
+            let preface = r[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            let argText = (args.values.first as? String) ?? (args.isEmpty ? "" : "\(args)")
+            onStep?((preface.isEmpty ? "" : preface + "\n") + "▸ \(name) \(argText.prefix(120))")
+            onStatus?(name.uppercased())
+            if let q = Agent.needsConfirm(name, args) {
+                let a = NSAlert(); a.messageText = "JARVIS wants to act"; a.informativeText = q
+                a.addButton(withTitle: "Allow"); a.addButton(withTitle: "Deny"); NSApp.activate(ignoringOtherApps: true)
+                if a.runModal() != .alertFirstButtonReturn { step("Tool result (\(name)): DENIED by the user. Explain briefly and stop.", n: n + 1, done: done); return }
+            }
+            Agent.run(name: name, args: args) { result in
+                onStatus?("THINKING")
+                step("Tool result (\(name)):\n\(result)", n: n + 1, done: done)
+            }
         }
     }
     static func request(_ prompt: String, done: @escaping (String) -> Void) {
@@ -89,9 +102,15 @@ enum AI {
         guard !apiKey.isEmpty || localhost else { done("No API key, sir. Use the menu bar ◎ → AI Provider…"); return }
         history.append(("user", prompt))
         let searchRule = Search.enabled
-            ? "You can search the web. If the question needs current, factual or external information you don't reliably know (news, prices, weather, docs, recent events), reply with ONLY a tag [SEARCH:<concise query>] and nothing else; you will receive the results and then answer. Do not search for things about this Mac or for casual conversation. Never search twice in a row."
-            : "You cannot browse the web. If asked for current information, say so briefly."
-        let system = JARVIS_PROMPT.replacingOccurrences(of: "SEARCH_INSTRUCTION", with: searchRule) + "\n\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
+            ? "Web search is available via the search tool; use it for current, factual or external information (news, prices, weather, docs). Cite the source site briefly."
+            : "Web search is not configured; if asked for current online information, say so briefly."
+        var system = JARVIS_PROMPT.replacingOccurrences(of: "SEARCH_INSTRUCTION", with: searchRule).replacingOccurrences(of: "TOOL_DOC", with: Agent.toolDoc) + "\n\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
+        let wantsAmbient = spoken || prompt.range(of: #"\b(heard|hear|said|say|saying|talk|conversation|mention|transcript|discuss|meeting|listen|today|earlier|remember|forget|left|where|happened|who|told)"#, options: [.regularExpression, .caseInsensitive]) != nil
+        let notes = Memory.notesText
+        if !notes.isEmpty { system += "\n\nRemembered notes:\n" + notes }
+        let ambient = Voice.shared.recentTranscript()
+        if wantsAmbient && !ambient.isEmpty { system += "\n\nHeard in the last 30 minutes (on-device speech-to-text, may contain errors; may include the user's own wake-word requests):\n" + ambient + "\nFor anything earlier, use the recall tool." }
+        if spoken { system += "\n\nThis question was SPOKEN via the wake word; reply briefly." }
         let b = base.hasSuffix("/") ? String(base.dropLast()) : base
         var req: URLRequest; var body: [String: Any]
         switch kind {
@@ -194,6 +213,117 @@ final class SearchDialog: NSObject {
     @objc func changed() { let p = Search.presets[popup.indexOfSelectedItem]; hint.stringValue = p.keyURL.isEmpty ? "" : "Get a key: \(p.keyURL)"; key.isEnabled = !p.keyURL.isEmpty }
 }
 
+// MARK: - Agent (tool loop that works with any provider)
+enum Agent {
+    static var confirmActions: Bool { get { UserDefaults.standard.object(forKey: "agentConfirm") as? Bool ?? true } set { UserDefaults.standard.set(newValue, forKey: "agentConfirm") } }
+    static let maxSteps = 8
+
+    static let toolDoc = """
+    You are an AGENT on this Mac: you can act, not just talk. To use a tool, output a line in exactly this form (one tool per reply, nothing else on that line):
+    [TOOL:name]{"arg": "value"}
+    After the tool runs you receive its result and continue. Chain several steps if needed, then give the final answer in plain prose with no tag. Tools:
+    - shell {"cmd": "..."}  run a zsh command (10 s timeout). Use for files, apps, system info, brew, git, etc. Prefer this for most tasks.
+    - applescript {"script": "..."}  run AppleScript (control apps, Finder, Music, notifications, system volume: set volume output volume 30).
+    - open {"target": "..."}  open an app by name, a URL, or a file path.
+    - read_file {"path": "..."}  read a text file (first 8 KB).
+    - write_file {"path": "...", "content": "..."}  write a text file.
+    - search {"query": "..."}  web search (only if enabled).
+    - telemetry {}  fresh CPU/memory/fan/temperature snapshot of this Mac.
+    - fans {"rpm": 3000} or {"rpm": "auto"}  set cooling fans.
+    - clipboard {"text": "..."} put text on the clipboard; {} reads it.
+    - recall {"query": "keys"} search everything heard (last 14 days) for words; {"hours": 8} returns everything heard in the last N hours instead.
+    - remember {"note": "keys are in the kitchen drawer"} store a note permanently.
+    - forget {"note": "keys"} delete remembered notes containing the text.
+    Rules: be decisive, act first, then report briefly. Never ask permission in text; the app confirms destructive commands itself. Never fabricate a tool result. Paths may use ~.
+    """
+
+    static func run(name: String, args: [String: Any], done: @escaping (String) -> Void) {
+        func sh(_ cmd: String) -> String {
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/zsh"); p.arguments = ["-lc", cmd]
+            let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+            do { try p.run() } catch { return "failed to launch: \(error.localizedDescription)" }
+            let deadline = DispatchTime.now() + 10
+            DispatchQueue.global().asyncAfter(deadline: deadline) { if p.isRunning { p.terminate() } }
+            let d = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            var out = String(data: d, encoding: .utf8) ?? ""
+            if out.count > 6000 { out = String(out.prefix(6000)) + "\n…(truncated)" }
+            return out.isEmpty ? "(no output, exit \(p.terminationStatus))" : out
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        func expand(_ p: String) -> String { p.hasPrefix("~") ? home + p.dropFirst() : p }
+        DispatchQueue.global().async {
+            var r: String
+            switch name {
+            case "shell": r = sh(args["cmd"] as? String ?? "")
+            case "applescript":
+                let script = args["script"] as? String ?? ""
+                var err: NSDictionary?; let res = NSAppleScript(source: script)?.executeAndReturnError(&err)
+                r = err != nil ? "AppleScript error: \(err!["NSAppleScriptErrorMessage"] ?? err!)" : (res?.stringValue ?? "ok")
+            case "open":
+                let t = args["target"] as? String ?? ""
+                if t.hasPrefix("http") || t.contains("://") { NSWorkspace.shared.open(URL(string: t)!); r = "opened \(t)" }
+                else if FileManager.default.fileExists(atPath: expand(t)) { NSWorkspace.shared.open(URL(fileURLWithPath: expand(t))); r = "opened \(t)" }
+                else { r = sh("open -a \"\(t)\" && echo launched \(t)") }
+            case "read_file":
+                let path = expand(args["path"] as? String ?? "")
+                if let d = FileManager.default.contents(atPath: path) { r = String(data: d.prefix(8192), encoding: .utf8) ?? "(binary file, \(d.count) bytes)" } else { r = "cannot read \(path)" }
+            case "write_file":
+                let path = expand(args["path"] as? String ?? ""), c = args["content"] as? String ?? ""
+                do { try c.write(toFile: path, atomically: true, encoding: .utf8); r = "wrote \(c.utf8.count) bytes to \(path)" } catch { r = "write failed: \(error.localizedDescription)" }
+            case "search":
+                guard Search.enabled else { r = "search is not configured"; break }
+                let sem = DispatchSemaphore(value: 0); var out = ""
+                Search.run(args["query"] as? String ?? "") { out = $0; sem.signal() }; sem.wait(); r = out
+            case "telemetry": r = Stats.shared.refresh().summary
+            case "fans":
+                let v = args["rpm"]; let rpm: Double? = (v as? Double) ?? (v as? Int).map(Double.init) ?? Double((v as? String) ?? "")
+                var out = ""; DispatchQueue.main.sync { out = FanControl.set(rpm) }; r = out
+            case "clipboard":
+                if let t = args["text"] as? String { DispatchQueue.main.sync { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(t, forType: .string) }; r = "copied" }
+                else { var t = ""; DispatchQueue.main.sync { t = NSPasteboard.general.string(forType: .string) ?? "" }; r = t.isEmpty ? "(clipboard empty)" : t }
+            case "recall":
+                if let h = (args["hours"] as? Double) ?? (args["hours"] as? Int).map(Double.init) { r = Memory.transcript(hours: h); if r.isEmpty { r = "(nothing heard in the last \(h) hours)" } }
+                else { r = Memory.search(args["query"] as? String ?? "") }
+            case "remember": r = Memory.remember(args["note"] as? String ?? "")
+            case "forget": r = Memory.forgetNote(matching: args["note"] as? String ?? "")
+            default: r = "unknown tool \(name)"
+            }
+            DispatchQueue.main.async { done(r) }
+        }
+    }
+
+    static func needsConfirm(_ name: String, _ args: [String: Any]) -> String? {
+        guard confirmActions else { return nil }
+        switch name {
+        case "shell":
+            let c = args["cmd"] as? String ?? ""
+            let risky = ["rm ", "sudo", "mv ", "kill", "pkill", "chmod", "chown", "> ", ">>", "dd ", "mkfs", "diskutil", "launchctl", "defaults write", "git push", "git reset", "osascript", "shutdown", "reboot", "brew install", "brew uninstall", "npm i", "pip install", "curl", "wget"]
+            return risky.contains { c.contains($0) } ? "Run command?\n\n\(c)" : nil
+        case "applescript": return "Run AppleScript?\n\n\(args["script"] as? String ?? "")"
+        case "write_file": return "Write file \(args["path"] as? String ?? "")?"
+        default: return nil
+        }
+    }
+
+    /// Parse "[TOOL:name]{json}" from a reply.
+    static func parse(_ r: String) -> (String, [String: Any], Range<String.Index>)? {
+        guard let m = r.range(of: #"\[TOOL:([a-z_]+)\]"#, options: .regularExpression) else { return nil }
+        let name = String(r[m].dropFirst(6).dropLast())
+        var rest = r[m.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        if rest.hasPrefix("```") { rest = rest.replacingOccurrences(of: #"^```\w*\n?"#, with: "", options: .regularExpression) }
+        // take the first balanced {...}
+        var depth = 0, endIdx: String.Index? = nil, inStr = false, esc = false
+        for i in rest.indices {
+            let ch = rest[i]
+            if inStr { if esc { esc = false } else if ch == "\\" { esc = true } else if ch == "\"" { inStr = false }; continue }
+            if ch == "\"" { inStr = true } else if ch == "{" { depth += 1 } else if ch == "}" { depth -= 1; if depth == 0 { endIdx = i; break } }
+        }
+        var args: [String: Any] = [:]
+        if let e = endIdx, let st = rest.firstIndex(of: "{"), let d = String(rest[st...e]).data(using: .utf8), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { args = j }
+        return (name, args, m)
+    }
+}
+
 // MARK: - Provider settings dialog
 final class ProviderDialog: NSObject {
     let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
@@ -233,8 +363,11 @@ final class HUDView: NSView, NSTextFieldDelegate {
     var title = CATextLayer()
     let input = NSTextField()
     let output = NSTextView()
+    static let bodyFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    static let bodyColor = NSColor(red: 0.7, green: 0.93, blue: 1, alpha: 1)
     let scroll = NSScrollView()
     var onClose: (() -> Void)?
+    var closing = false
 
     override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true; build() }
     required init?(coder: NSCoder) { fatalError() }
@@ -322,6 +455,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
         p.duration = 0.9; p.autoreverses = true; p.repeatCount = .infinity; core.add(p, forKey: "pulse")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard !self.closing else { return }
             CATransaction.begin(); CATransaction.setAnimationDuration(0.45)
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
             self.panel.bounds.size.width = self.W
@@ -329,6 +463,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
             let s = CABasicAnimation(keyPath: "position.y"); s.fromValue = 0; s.toValue = self.H
             s.duration = 1.8; s.repeatCount = .infinity; self.scan.add(s, forKey: "scan")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                guard !self.closing else { return }
                 NSAnimationContext.runAnimationGroup { c in c.duration = 0.25
                     self.input.animator().alphaValue = 1; self.scroll.animator().alphaValue = 1 }
                 self.window?.makeFirstResponder(self.input)
@@ -337,6 +472,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
     }
 
     func hide(_ done: @escaping () -> Void) {
+        closing = true
         input.alphaValue = 0; scroll.alphaValue = 0
         CATransaction.begin(); CATransaction.setAnimationDuration(0.25)
         CATransaction.setCompletionBlock {
@@ -349,33 +485,36 @@ final class HUDView: NSView, NSTextFieldDelegate {
 
     func append(_ who: String, _ text: String) {
         let a = NSMutableAttributedString(string: "\(who) ", attributes: [.foregroundColor: CYAN, .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)])
-        a.append(NSAttributedString(string: text + "\n\n", attributes: [.foregroundColor: output.textColor!, .font: output.font!]))
+        a.append(NSAttributedString(string: text + "\n\n", attributes: [.foregroundColor: HUDView.bodyColor, .font: HUDView.bodyFont]))
         output.textStorage?.append(a)
         output.scrollToEndOfDocument(nil)
     }
 
     func control(_ c: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         if sel == #selector(NSResponder.cancelOperation(_:)) { onClose?(); return true }
-        if sel == #selector(NSResponder.insertNewline(_:)) {
-            let q = input.stringValue.trimmingCharacters(in: .whitespaces); guard !q.isEmpty else { return true }
-            input.stringValue = ""; append("YOU ▸", q); append("JARVIS ▸", "…")
+        if sel == #selector(NSResponder.insertNewline(_:)) { submit(input.stringValue); return true }
+        return false
+    }
+
+    func submit(_ text: String, spoken: Bool = false) {
+            let q = text.trimmingCharacters(in: .whitespaces); guard !q.isEmpty else { return }
+            input.stringValue = ""; append(spoken ? "YOU 🎙 ▸" : "YOU ▸", q); append("JARVIS ▸", "…")
+            AI.spoken = spoken
             title.string = "J.A.R.V.I.S.  — THINKING"
             AI.onStatus = { [weak self] st in self?.title.string = "J.A.R.V.I.S.  — \(st)" }
-            AI.ask(q) { raw in
-                var r = raw
-                if let m = r.range(of: #"\[FAN:(AUTO|[0-9]+)\]"#, options: [.regularExpression, .caseInsensitive]) {
-                    let tag = r[m].dropFirst(5).dropLast().uppercased(); r.removeSubrange(m); r = r.trimmingCharacters(in: .whitespacesAndNewlines)
-                    r += "\n[" + FanControl.set(tag == "AUTO" ? nil : Double(tag)) + "]"
-                }
+            AI.onStep = { [weak self] st in
+                guard let self = self else { return }
+                let a = NSAttributedString(string: st + "\n", attributes: [.foregroundColor: DIM.withAlphaComponent(0.9), .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)])
+                if let s = self.output.string.range(of: "…\n\n", options: .backwards) { self.output.textStorage?.insert(a, at: self.output.string.distance(from: self.output.string.startIndex, to: s.lowerBound)) }
+                self.output.scrollToEndOfDocument(nil)
+            }
+            AI.ask(q) { r in
                 self.title.string = "J.A.R.V.I.S."
                 if let s = self.output.string.range(of: "…\n\n", options: .backwards) {
-                    self.output.textStorage?.replaceCharacters(in: NSRange(s, in: self.output.string), with: r + "\n\n")
+                    self.output.textStorage?.replaceCharacters(in: NSRange(s, in: self.output.string), with: NSAttributedString(string: r + "\n\n", attributes: [.foregroundColor: HUDView.bodyColor, .font: HUDView.bodyFont]))
                     self.output.scrollToEndOfDocument(nil)
                 }
             }
-            return true
-        }
-        return false
     }
 }
 
@@ -427,10 +566,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         NSApp.mainMenu = main
         installTap()
+        setupVoice()
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { _ in
             for d in [0.3, 1.2, 2.5] { DispatchQueue.main.asyncAfter(deadline: .now() + d) { self.overlay?.relayout() } }
         }
     }
+
+    func setupVoice() {
+        let v = Voice.shared
+        v.onStateChange = { [weak self] in self?.refreshIcon(); self?.buildMenu() }
+        v.onWake = { [weak self] in guard let self = self else { return }; if !self.active { self.showHUD() }; self.panel?.hud.title.string = "J.A.R.V.I.S.  — LISTENING" }
+        v.onPartial = { [weak self] q in self?.panel?.hud.input.stringValue = q }
+        v.onQuestion = { [weak self] q in guard let self = self else { return }; if !self.active { self.showHUD() }; self.panel?.hud.submit(q, spoken: true) }
+        v.apply()
+        Memory.prune()
+    }
+    func refreshIcon() { statusItem.button?.title = Voice.shared.listening ? "◎ 🎙" : "◎" }
 
     func buildMenu() {
         let m = NSMenu()
@@ -442,6 +593,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fan.addItem(withTitle: "Maximum", action: #selector(fanMax), keyEquivalent: "")
         fan.addItem(.separator())
         fan.addItem(withTitle: FanControl.installed ? "Helper installed ✓" : "Install Fan Control Helper…", action: #selector(fanInstall), keyEquivalent: "")
+        let vm = NSMenu(title: "Wake Word"); let vi = NSMenuItem(title: "Wake Word \"Jarvis\"  (\(Voice.shared.listening ? "listening" : "off"))", action: nil, keyEquivalent: ""); vi.submenu = vm; m.addItem(vi)
+        for (t, mode) in [("Automatic (when plugged in)", Voice.Mode.auto), ("Always On", .on), ("Off", .off)] {
+            let i = vm.addItem(withTitle: t, action: #selector(setVoice(_:)), keyEquivalent: ""); i.representedObject = mode.rawValue; i.state = Voice.shared.mode == mode ? .on : .off
+        }
+        vm.addItem(.separator()); vm.addItem(withTitle: "Forget Today's Transcript", action: #selector(forgetTranscript), keyEquivalent: "")
+        vm.addItem(withTitle: "Forget Everything Heard", action: #selector(forgetAllHeard), keyEquivalent: "")
+        vm.addItem(withTitle: "Forget Remembered Notes", action: #selector(forgetNotes), keyEquivalent: "")
+        vm.addItem(withTitle: "Show Memory Folder", action: #selector(showMemory), keyEquivalent: "")
+        let c = m.addItem(withTitle: "Ask Before Risky Actions", action: #selector(toggleConfirm), keyEquivalent: ""); c.state = Agent.confirmActions ? .on : .off
         m.addItem(withTitle: "Web Search…  (\(Search.provider))", action: #selector(setSearch), keyEquivalent: "")
         m.addItem(withTitle: "AI Provider…  (\(AI.providerName) · \(AI.model))", action: #selector(setProvider), keyEquivalent: "")
         m.addItem(withTitle: "Clear Conversation", action: #selector(clear), keyEquivalent: "")
@@ -459,6 +619,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return a.runModal() == .alertFirstButtonReturn ? tf.stringValue : nil
     }
     let providerDialog = ProviderDialog(), searchDialog = SearchDialog()
+    @objc func setVoice(_ i: NSMenuItem) { Voice.shared.mode = Voice.Mode(rawValue: i.representedObject as! String)! }
+    @objc func forgetTranscript() { Memory.forgetToday() }
+    @objc func forgetAllHeard() { Memory.forgetAllHeard() }
+    @objc func forgetNotes() { Memory.forgetAllNotes() }
+    @objc func showMemory() { NSWorkspace.shared.open(Memory.dir) }
+    @objc func toggleConfirm() { Agent.confirmActions.toggle(); buildMenu() }
     @objc func setSearch() { searchDialog.run(); buildMenu() }
     @objc func setProvider() { providerDialog.run(); buildMenu() }
     @objc func clear() { AI.history = []; panel?.hud.output.string = "" }
@@ -471,10 +637,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                 if let t = me.tap { CGEvent.tapEnable(tap: t, enable: true) }; return Unmanaged.passUnretained(event)
             }
-            // ⌥ Space (keycode 49) toggles. Also F5 (96) for Siri-key replacement.
+            // ⌥ Space (keycode 49) toggles the HUD. F5 is intentionally left alone.
             let code = event.getIntegerValueField(.keyboardEventKeycode)
             let flags = event.flags.intersection([.maskAlternate, .maskCommand, .maskControl, .maskShift])
-            if (code == 49 && flags == .maskAlternate) || code == 96 {
+            if code == 49 && flags == .maskAlternate {
                 DispatchQueue.main.async { me.toggle() }; return nil
             }
             if code == 49 && flags == [.maskAlternate, .maskControl] {
@@ -514,7 +680,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showHUD() {
-        guard !active, let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.main else { return }
+        if let old = panel { old.orderOut(nil) }   // defensive: never leave an orphan behind
         active = true
         let p = HUDPanel(screen: screen); panel = p
         p.hud.onClose = { [weak self] in self?.hideHUD() }
@@ -523,7 +690,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func hideHUD() {
         guard active, let p = panel else { return }
-        p.hud.hide { p.orderOut(nil); self.panel = nil; self.active = false }
+        // Clear state immediately so a second toggle during the close animation starts a fresh panel
+        // instead of racing this one's completion handler.
+        active = false; panel = nil
+        p.hud.hide { p.orderOut(nil) }
     }
 }
 

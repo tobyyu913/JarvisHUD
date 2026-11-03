@@ -15,9 +15,45 @@
 
 | Shortcut | Action |
 |---|---|
-| **⌥ Space** or **F5** | Summon JARVIS. A glowing ring spins up in the top-right corner, a panel expands leftward, and you type. Press again or hit Esc to dismiss. |
+| **⌥ Space** | Summon JARVIS. A glowing ring spins up in the top-right corner, a panel expands leftward, and you type. Press again or hit Esc to dismiss. |
 | **⌃⌥ Space** | Toggle the telemetry overlay. Live stats are painted around the edges of the screen. |
-| **◎ menu** | AI provider, web search, fan control, clear conversation, quit. |
+| **"Jarvis, …"** | Wake word. While listening (automatically on AC power, or forced on from the menu) just say *Jarvis* followed by your question. The HUD pops up, your words appear as you speak, and the question is sent when you pause. |
+| **◎ menu** | AI provider, web search, wake word, memory, risky-action confirmation, fan control, clear conversation, quit. |
+
+### JARVIS is an agent
+
+He doesn't just answer, he acts. Every reply can call a tool, read the result and continue, up to eight steps, with each step shown dimly in the panel as it happens. Tools:
+
+- **shell**: run any zsh command
+- **applescript**: control apps, Finder, Music, volume, notifications
+- **open**: launch an app, URL or file
+- **read_file / write_file**
+- **search**: web search, if configured
+- **telemetry**: a fresh sensor snapshot
+- **fans**: set or release cooling fans
+- **clipboard**: read or set
+- **recall**: search everything he has heard (see below)
+- **remember / forget**: keep or drop a note permanently
+
+> *Clean up the screenshots on my desktop into a folder.*
+> *What's using port 3000? Kill it.*
+> *Open the last PDF I downloaded.*
+> *Set the volume to 20 and play some jazz.*
+
+Risky actions (deleting, sudo, AppleScript, writing files, installs, network downloads) pop an Allow / Deny prompt first. Turn that off under ◎ → *Ask Before Risky Actions* if you trust him completely. This works with every provider because it uses a plain-text tool protocol rather than provider-specific function calling.
+
+### Always listening, with a memory
+
+With the wake word on, JARVIS listens 24/7 through the Mac's microphone using Apple's **on-device** speech recognition. Audio never leaves the machine; only the question you ask him is sent to your AI provider. Everything he hears is written, with a timestamp, to a plain-text log in `~/Library/Application Support/JarvisHUD/heard/` and kept for 14 days. That log is what lets him answer about your day:
+
+> *Jarvis, remember I left the car keys in the blue bowl by the door.*
+> *Jarvis, where did I leave my keys?*
+> *Jarvis, what did we decide about the deadline in that call this morning?*
+> *Jarvis, what happened today?*
+
+"Remember" stores a permanent note (`notes.json`, always visible to him). Anything else he looks up with the **recall** tool, which searches the heard log by keyword or by time window. Speech-to-text is imperfect, so he treats the log as approximate.
+
+Listening modes under ◎ → *Wake Word "Jarvis"*: **Automatic** (on while plugged in, off on battery), **Always On**, **Off**. The menu bar icon shows 🎙 while he is listening, and macOS shows its orange microphone indicator. The same submenu has *Forget Today's Transcript*, *Forget Everything Heard*, *Forget Remembered Notes* and *Show Memory Folder*. It is your Mac and your log: delete it whenever you like.
 
 ### JARVIS, in character
 
@@ -102,9 +138,9 @@ Needs the Xcode command line tools. Edit `SIGN` in `build.sh` to your own signin
    | Custom | OpenAI-compatible | yours | yours |
 
    Anything that speaks the OpenAI `chat/completions` format works via *Custom*: just set the base URL (ending in `/v1`) and model name.
-3. **Web search (optional).** ◎ → *Web Search…*, pick Tavily, Brave or Serper, paste the key.
-4. **Fans (optional).** ◎ → Fans → *Install Fan Control Helper…*
-5. **Siri.** If you want F5 to replace Siri completely, set Siri's keyboard shortcut to *Off* in System Settings so the two don't fight.
+3. **Wake word.** On first launch (on AC power) macOS asks for **Speech Recognition** and **Microphone**. Allow both. Apple's prompt says speech "may be sent to Apple"; this app requests on-device recognition, which every Apple Silicon Mac supports, so it stays local.
+4. **Web search (optional).** ◎ → *Web Search…*, pick Tavily, Brave or Serper, paste the key.
+5. **Fans (optional).** ◎ → Fans → *Install Fan Control Helper…*
 
 The API key is stored in the app's own preferences on your Mac and is sent only to the provider you chose. The search key goes only to the search provider you chose.
 
@@ -115,7 +151,9 @@ Built and tested on an M4 Max MacBook Pro running macOS 27. It should work on an
 ## Project layout
 
 ```
-Sources/main.swift      app, hotkeys, chat HUD, multi-provider AI client, JARVIS persona, fan-control bridge
+Sources/main.swift      app, hotkeys, chat HUD, multi-provider AI client, agent tool loop, JARVIS persona, fan-control bridge
+Sources/Voice.swift     always-on wake word (on-device speech recognition, AC-power auto mode)
+Sources/Memory.swift    persistent heard-log and remembered notes
 Sources/Overlay.swift   edge telemetry overlay and full-screen handling
 Sources/Stats.swift     SMC reader/writer, CPU/memory/disk/network/battery metrics
 Helper/main.swift       jarvisfan setuid helper

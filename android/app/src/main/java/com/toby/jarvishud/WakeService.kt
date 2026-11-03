@@ -81,9 +81,15 @@ class ChargeJob : JobService() {
     companion object {
         fun schedule(c: Context) {
             val js = c.getSystemService(JobScheduler::class.java)
+            if (js.getPendingJob(7) != null) return   // already armed; rescheduling while charging would re-fire it in a loop
             try { js.schedule(JobInfo.Builder(7, ComponentName(c, ChargeJob::class.java)).setRequiresCharging(true).setPersisted(true).build()) } catch (e: Exception) { AI.log(c, "job: $e") }
         }
     }
-    override fun onStartJob(p: JobParameters): Boolean { WakeService.applyMode(this); return false }
+    override fun onStartJob(p: JobParameters): Boolean {
+        WakeService.applyMode(this)
+        // re-arm only once the charger is unplugged, otherwise the job would fire again immediately
+        Handler(Looper.getMainLooper()).postDelayed({ if (!Stats.charging(this)) schedule(this) }, 60_000)
+        return false
+    }
     override fun onStopJob(p: JobParameters) = false
 }

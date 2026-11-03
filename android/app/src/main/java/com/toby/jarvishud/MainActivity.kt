@@ -8,6 +8,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
+import android.net.Uri
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -35,6 +37,7 @@ class MainActivity : Activity() {
         root.addView(label("1 · MAKE JARVIS THE DEFAULT ASSISTANT"))
         root.addView(TextView(this).apply { text = "Settings → Apps → Default apps → Digital assistant app → JARVIS. On Xiaomi/HyperOS this replaces 小爱同学 on long-press home / power."; setTextColor(body); textSize = 12f })
         root.addView(button("Open assistant settings") { openAssistantSettings() })
+        root.addView(button("Take over power button (Xiaomi)") { takeOverPowerButton() })
         root.addView(button("Grant microphone & notifications") { requestPerms() })
         root.addView(button("Test the HUD") { startActivity(Intent(this, AssistActivity::class.java)) })
 
@@ -86,6 +89,23 @@ class MainActivity : Activity() {
         val isDefault = cur.startsWith(packageName)
         status.text = (if (isDefault) "✓ JARVIS is the default assistant" else "✗ Not the default assistant yet (current: ${cur.substringBefore('/').ifEmpty { "none" }})") +
             "\n" + (if (WakeService.running) "🎙 Listening for \"Jarvis\"" else "Wake word idle")
+    }
+    /** HyperOS hard-wires "long press power → 小爱" to Xiaomi's own package. The only value of that shortcut that goes
+     *  through the system assistant role is launch_google_search, so we write that into the (world-writable with
+     *  WRITE_SETTINGS) system table. */
+    private fun takeOverPowerButton() {
+        if (!Settings.System.canWrite(this)) {
+            Toast.makeText(this, "Allow \"Modify system settings\" for JARVIS, then tap again", Toast.LENGTH_LONG).show()
+            try { startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
+            return
+        }
+        var ok = 0
+        for (k in listOf("long_press_power_key")) {
+            val cur = Settings.System.getString(contentResolver, k)
+            if (cur != null && cur.contains("xiaoai") || cur == "launch_voice_assistant")
+                try { if (Settings.System.putString(contentResolver, k, "launch_google_search")) ok++ } catch (e: Exception) { AI.log(this, "putString $k: $e") }
+        }
+        Toast.makeText(this, if (ok > 0) "Long-press power now summons JARVIS" else "Nothing to change (already not 小爱, or not a Xiaomi)", Toast.LENGTH_LONG).show()
     }
     private fun openAssistantSettings() {
         for (a in listOf(Settings.ACTION_VOICE_INPUT_SETTINGS, Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS, Settings.ACTION_SETTINGS)) {

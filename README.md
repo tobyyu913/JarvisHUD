@@ -155,6 +155,8 @@ The same JARVIS for your phone, in [`android/`](android/). It registers as the p
 
 **Install:** download `JarvisHUD-android.apk` from Releases, install it, open JARVIS, grant microphone + notifications, set your AI key, then tap *Open assistant settings* and choose JARVIS as the digital assistant app. On Xiaomi / HyperOS also allow **"Display pop-up windows while running in the background"** for JARVIS under App info → Other permissions, otherwise the system blocks the HUD from appearing over other apps.
 
+**Xiaomi power button:** HyperOS wires "long press power" straight to 小爱's own package, ignoring the assistant setting. In JARVIS tap **Take over power button (Xiaomi)** (it asks for *Modify system settings* once); it switches the shortcut to the one value that goes through the system assistant, so holding power summons JARVIS. The same change by hand: Settings → Additional settings → Button shortcuts → Long press power → Google Assistant. Updating the APK on HyperOS can reset the microphone and pop-up permissions, so re-check them after an update.
+
 Build from source: `cd android && ./gradlew assembleDebug` (Gradle 8.9, AGP 8.7.3, JDK 17).
 
 ## Compatibility

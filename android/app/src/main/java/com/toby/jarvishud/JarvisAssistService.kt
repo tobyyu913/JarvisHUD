@@ -24,10 +24,10 @@ class JarvisSession(c: Context) : VoiceInteractionSession(c) {
     override fun onCreate() { super.onCreate(); setUiEnabled(false) }
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        Prefs.init(context)
+        Prefs.init(context); AI.log(context, "session onShow flags=$showFlags")
         val i = Intent(context, AssistActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("listen", true)
         args?.getString("query")?.let { i.putExtra("query", it) }
-        try { startAssistantActivity(i) } catch (_: Exception) { context.startActivity(i) }
+        try { startAssistantActivity(i) } catch (e: Exception) { AI.log(context, "startAssistantActivity: $e"); try { context.startActivity(i) } catch (e2: Exception) { AI.log(context, "startActivity: $e2") } }
         hide()
     }
     override fun onHandleAssist(state: AssistState) { /* we don't read screen content */ }

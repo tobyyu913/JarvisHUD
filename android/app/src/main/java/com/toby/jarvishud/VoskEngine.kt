@@ -51,8 +51,17 @@ object VoskEngine {
         private fun loop(m: Model) {
             val rate = 16000
             val min = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val rec = try { AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 8192) * 2) } catch (e: Exception) { main.post { onError("microphone: $e") }; running = false; return }
-            if (rec.state != AudioRecord.STATE_INITIALIZED) { main.post { onError("microphone not available") }; running = false; return }
+            // Right after the HUD is summoned (power / home key) the window may not yet count as foreground, and
+            // HyperOS only hands the mic to foreground windows, so retry for a couple of seconds before giving up.
+            var rec: AudioRecord? = null
+            for (attempt in 0 until 6) {
+                if (!running) return
+                val r = try { AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 8192) * 2) } catch (e: Exception) { null }
+                if (r != null && r.state == AudioRecord.STATE_INITIALIZED) { rec = r; break }
+                try { r?.release() } catch (_: Exception) {}
+                Thread.sleep(350)
+            }
+            if (rec == null) { main.post { onError("microphone not available") }; running = false; return }
             val recognizer = Recognizer(m, rate.toFloat())
             val buf = ShortArray(4096)
             try {

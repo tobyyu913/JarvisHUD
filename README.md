@@ -144,6 +144,19 @@ Needs the Xcode command line tools. Edit `SIGN` in `build.sh` to your own signin
 
 The API key is stored in the app's own preferences on your Mac and is sent only to the provider you chose. The search key goes only to the search provider you chose.
 
+## Android version
+
+The same JARVIS for your phone, in [`android/`](android/). It registers as the phone's **default digital assistant**, the same hook 小爱同学 (XiaoAI) or Google Assistant use, so long-press home / the power-button gesture summons the cyan ring and panel instead.
+
+- Same persona, same providers (Groq, Gemini, OpenAI, Anthropic, any OpenAI-compatible URL), same web search keys.
+- Agent tools on Android: open apps, open URLs, alarms, timers, reminders for deadlines, clipboard, telemetry (battery, memory, storage, network), plus remember / forget / recall.
+- Speech is fully **offline** with a bundled Vosk English model, so it works on Xiaomi phones without Google services. Nothing but the question text leaves the phone.
+- Wake word "Jarvis" runs as a foreground service (Automatic while charging / Always on / Off) and logs everything heard, for 14 days, to the app's private storage, like the Mac version.
+
+**Install:** download `JarvisHUD-android.apk` from Releases, install it, open JARVIS, grant microphone + notifications, set your AI key, then tap *Open assistant settings* and choose JARVIS as the digital assistant app. On Xiaomi / HyperOS also allow **"Display pop-up windows while running in the background"** for JARVIS under App info → Other permissions, otherwise the system blocks the HUD from appearing over other apps.
+
+Build from source: `cd android && ./gradlew assembleDebug` (Gradle 8.9, AGP 8.7.3, JDK 17).
+
 ## Compatibility
 
 Built and tested on an M4 Max MacBook Pro running macOS 27. It should work on any Apple Silicon Mac, but SMC temperature key names differ between chips. If some sensors are missing or look wrong on your machine, adjust the `tempKeys` list in `Sources/Stats.swift`.

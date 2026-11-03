@@ -1,0 +1,19 @@
+<resources>
+    <style name="Theme.Jarvis" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">#06101A</item>
+        <item name="android:textColorPrimary">#B3EDFF</item>
+        <item name="android:textColorSecondary">#5FB8D9</item>
+        <item name="colorAccent">#33D9FF</item>
+        <item name="colorPrimary">#06101A</item>
+        <item name="colorPrimaryDark">#000000</item>
+    </style>
+    <style name="Theme.Jarvis.Overlay" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowSoftInputMode">adjustResize</item>
+    </style>
+</resources>

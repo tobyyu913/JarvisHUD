@@ -11,4 +11,6 @@
 <key>NSHighResolutionCapable</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>JarvisHUD listens for the wake word "Jarvis" so you can talk to it hands-free.</string>
 <key>NSSpeechRecognitionUsageDescription</key><string>JarvisHUD transcribes speech on-device to detect "Jarvis" and hear your question.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>JARVIS controls other apps (Reminders, Calendar, Finder, Music…) when you ask him to.</string>
 </dict></plist>

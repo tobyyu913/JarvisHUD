@@ -75,6 +75,8 @@ enum AI {
 
     static var spoken = false
     static var onStatus: ((String) -> Void)?
+    /// Ask the user to allow a risky tool call. Non-blocking; set by the HUD. Falls back to an alert.
+    static var onConfirm: ((String, @escaping (Bool) -> Void) -> Void)?
     static var onStep: ((String) -> Void)?
     static func ask(_ prompt: String, done: @escaping (String) -> Void) { step(prompt, n: 0, done: done) }
     private static func step(_ prompt: String, n: Int, done: @escaping (String) -> Void) {
@@ -86,15 +88,21 @@ enum AI {
             let argText = (args.values.first as? String) ?? (args.isEmpty ? "" : "\(args)")
             onStep?((preface.isEmpty ? "" : preface + "\n") + "▸ \(name) \(argText.prefix(120))")
             onStatus?(name.uppercased())
-            if let q = Agent.needsConfirm(name, args) {
-                let a = NSAlert(); a.messageText = "JARVIS wants to act"; a.informativeText = q
-                a.addButton(withTitle: "Allow"); a.addButton(withTitle: "Deny"); NSApp.activate(ignoringOtherApps: true)
-                if a.runModal() != .alertFirstButtonReturn { step("Tool result (\(name)): DENIED by the user. Explain briefly and stop.", n: n + 1, done: done); return }
+            let go = {
+                Agent.run(name: name, args: args) { result in
+                    onStatus?("THINKING")
+                    step("Tool result (\(name)):\n\(result)", n: n + 1, done: done)
+                }
             }
-            Agent.run(name: name, args: args) { result in
-                onStatus?("THINKING")
-                step("Tool result (\(name)):\n\(result)", n: n + 1, done: done)
+            guard let q = Agent.needsConfirm(name, args) else { go(); return }
+            let decide: (Bool) -> Void = { ok in
+                if ok { go() } else { step("Tool result (\(name)): DENIED by the user. Explain briefly and stop.", n: n + 1, done: done) }
             }
+            if let c = onConfirm { c(q, decide); return }
+            let a = NSAlert(); a.messageText = "JARVIS wants to act"; a.informativeText = q
+            a.addButton(withTitle: "Allow"); a.addButton(withTitle: "Deny"); NSApp.activate(ignoringOtherApps: true)
+            a.window.level = .screenSaver
+            decide(a.runModal() == .alertFirstButtonReturn)
         }
     }
     static func request(_ prompt: String, done: @escaping (String) -> Void) {
@@ -104,7 +112,7 @@ enum AI {
         let searchRule = Search.enabled
             ? "Web search is available via the search tool; use it for current, factual or external information (news, prices, weather, docs). Cite the source site briefly."
             : "Web search is not configured; if asked for current online information, say so briefly."
-        var system = JARVIS_PROMPT.replacingOccurrences(of: "SEARCH_INSTRUCTION", with: searchRule).replacingOccurrences(of: "TOOL_DOC", with: Agent.toolDoc) + "\n\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
+        var system = JARVIS_PROMPT.replacingOccurrences(of: "SEARCH_INSTRUCTION", with: searchRule).replacingOccurrences(of: "TOOL_DOC", with: Agent.toolDoc) + "\n\nCurrent date and time: " + { let f = DateFormatter(); f.dateFormat = "EEEE d MMMM yyyy, h:mm a"; return f.string(from: Date()) }() + "\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
         let wantsAmbient = spoken || prompt.range(of: #"\b(heard|hear|said|say|saying|talk|conversation|mention|transcript|discuss|meeting|listen|today|earlier|remember|forget|left|where|happened|who|told)"#, options: [.regularExpression, .caseInsensitive]) != nil
         let notes = Memory.notesText
         if !notes.isEmpty { system += "\n\nRemembered notes:\n" + notes }
@@ -226,7 +234,7 @@ enum Agent {
     [TOOL:name]{"arg": "value"}
     After the tool runs you receive its result and continue. Chain several steps if needed, then give the final answer in plain prose with no tag. Tools:
     - shell {"cmd": "..."}  run a zsh command (10 s timeout). Use for files, apps, system info, brew, git, etc. Prefer this for most tasks.
-    - applescript {"script": "..."}  run AppleScript (control apps, Finder, Music, notifications, system volume: set volume output volume 30).
+    - applescript {"script": "..."}  run AppleScript (control apps, Finder, Music, notifications, system volume: set volume output volume 30). For a reminder or deadline at a time, create a real reminder: tell application "Reminders" to make new reminder with properties {name:"Assignment", remind me date:date "3 November 2026 6:30:00 PM"} (the current date and time are given below). For an event, use Calendar. Do not use display notification for future times; it fires immediately.
     - open {"target": "..."}  open an app by name, a URL, or a file path.
     - read_file {"path": "..."}  read a text file (first 8 KB).
     - write_file {"path": "...", "content": "..."}  write a text file.
@@ -261,7 +269,7 @@ enum Agent {
             case "applescript":
                 let script = args["script"] as? String ?? ""
                 var err: NSDictionary?; let res = NSAppleScript(source: script)?.executeAndReturnError(&err)
-                r = err != nil ? "AppleScript error: \(err!["NSAppleScriptErrorMessage"] ?? err!)" : (res?.stringValue ?? "ok")
+                r = err != nil ? "AppleScript error: \(err!["NSAppleScriptErrorMessage"] ?? err!)" : "AppleScript ran successfully" + ((res?.stringValue).map { $0.isEmpty ? "" : ", returned: \($0)" } ?? "")
             case "open":
                 let t = args["target"] as? String ?? ""
                 if t.hasPrefix("http") || t.contains("://") { NSWorkspace.shared.open(URL(string: t)!); r = "opened \(t)" }
@@ -475,6 +483,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
     }
 
     func hide(_ done: @escaping () -> Void) {
+        resolveConfirm(false)
         closing = true
         input.alphaValue = 0; scroll.alphaValue = 0
         CATransaction.begin(); CATransaction.setAnimationDuration(0.25)
@@ -493,7 +502,29 @@ final class HUDView: NSView, NSTextFieldDelegate {
         output.scrollToEndOfDocument(nil)
     }
 
+    /// Pending risky-action confirmation: ⏎ allows, ⎋ denies, closing the HUD denies.
+    var pendingConfirm: ((Bool) -> Void)?
+    func askConfirm(_ q: String, _ decide: @escaping (Bool) -> Void) {
+        pendingConfirm = decide
+        title.string = "J.A.R.V.I.S.  — ⏎ ALLOW  ⎋ DENY"
+        let a = NSAttributedString(string: "⚠ " + q.replacingOccurrences(of: "\n\n", with: "  ") + "\n", attributes: [.foregroundColor: NSColor(red: 1, green: 0.75, blue: 0.3, alpha: 1), .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)])
+        if let s = output.string.range(of: "…\n\n", options: .backwards) { output.textStorage?.insert(a, at: output.string.distance(from: output.string.startIndex, to: s.lowerBound)) }
+        output.scrollToEndOfDocument(nil)
+        input.placeholderString = "Press Return to allow, Esc to deny"
+        window?.makeFirstResponder(input)
+    }
+    func resolveConfirm(_ ok: Bool) {
+        guard let d = pendingConfirm else { return }
+        pendingConfirm = nil; input.placeholderString = "Ask anything…"
+        title.string = "J.A.R.V.I.S.  — " + (ok ? "WORKING" : "THINKING")
+        d(ok)
+    }
+
     func control(_ c: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        if pendingConfirm != nil {
+            if sel == #selector(NSResponder.cancelOperation(_:)) { resolveConfirm(false); return true }
+            if sel == #selector(NSResponder.insertNewline(_:)) { resolveConfirm(true); return true }
+        }
         if sel == #selector(NSResponder.cancelOperation(_:)) { onClose?(); return true }
         if sel == #selector(NSResponder.insertNewline(_:)) { submit(input.stringValue); return true }
         return false
@@ -505,6 +536,10 @@ final class HUDView: NSView, NSTextFieldDelegate {
             AI.spoken = spoken
             title.string = "J.A.R.V.I.S.  — THINKING"
             AI.onStatus = { [weak self] st in self?.title.string = "J.A.R.V.I.S.  — \(st)" }
+            AI.onConfirm = { [weak self] q, decide in
+                guard let self = self, self.window?.isVisible == true else { decide(false); return }
+                self.askConfirm(q, decide)
+            }
             AI.onStep = { [weak self] st in
                 guard let self = self else { return }
                 let a = NSAttributedString(string: st + "\n", attributes: [.foregroundColor: DIM.withAlphaComponent(0.9), .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)])

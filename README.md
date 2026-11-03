@@ -40,7 +40,7 @@ He doesn't just answer, he acts. Every reply can call a tool, read the result an
 > *Open the last PDF I downloaded.*
 > *Set the volume to 20 and play some jazz.*
 
-Risky actions (deleting, sudo, AppleScript, writing files, installs, network downloads) pop an Allow / Deny prompt first. Turn that off under ◎ → *Ask Before Risky Actions* if you trust him completely. This works with every provider because it uses a plain-text tool protocol rather than provider-specific function calling.
+Risky actions (deleting, sudo, AppleScript, writing files, installs, network downloads) ask first, right inside the panel: press Return to allow or Esc to deny. Turn that off under ◎ → *Ask Before Risky Actions* if you trust him completely. This works with every provider because it uses a plain-text tool protocol rather than provider-specific function calling.
 
 ### Always listening, with a memory
 

@@ -129,6 +129,8 @@ enum AI {
         }
         req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        req.timeoutInterval = 60
+        vlog("ai → \(providerName)/\(model): \(prompt.prefix(120))")
         URLSession.shared.dataTask(with: req) { data, _, err in
             var text = "Error: \(err?.localizedDescription ?? "no response")"
             if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
@@ -137,6 +139,7 @@ enum AI {
                 else if let e = j["error"] as? String { text = "Error: \(e)" }
                 else { text = "Error: unexpected response from \(providerName)" }
             }
+            vlog("ai ← \(text.prefix(300))")
             DispatchQueue.main.async { done(text) }
         }.resume()
     }

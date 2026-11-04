@@ -82,7 +82,12 @@ enum AI {
     private static func step(_ prompt: String, n: Int, done: @escaping (String) -> Void) {
         request(prompt) { r in
             guard n < Agent.maxSteps, let (name, args, range) = Agent.parse(r) else {
-                done(r.replacingOccurrences(of: #"\[TOOL:[^\]]+\]\s*\{[^\n]*\}?"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)); return
+                var final = r.replacingOccurrences(of: #"\[TOOL:[^\]]+\]\s*\{[^\n]*\}?"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+                // Never leave the HUD with a blank line: a reply that was *only* a malformed/unknown tool call would strip to nothing.
+                if final.isEmpty { final = r.trimmingCharacters(in: .whitespacesAndNewlines) }
+                if final.isEmpty { final = n >= Agent.maxSteps ? "I ran out of steps, sir." : "Done, sir." }
+                vlog("ai final (n=\(n)): \(final.prefix(200))")
+                done(final); return
             }
             let preface = r[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
             let argText = (args.values.first as? String) ?? (args.isEmpty ? "" : "\(args)")
@@ -229,6 +234,7 @@ enum Agent {
     static var confirmActions: Bool { get { UserDefaults.standard.object(forKey: "agentConfirm") as? Bool ?? true } set { UserDefaults.standard.set(newValue, forKey: "agentConfirm") } }
     static let maxSteps = 8
 
+    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget"]
     static let toolDoc = """
     You are an AGENT on this Mac: you can act, not just talk. To use a tool, output a line in exactly this form (one tool per reply, nothing else on that line):
     [TOOL:name]{"arg": "value"}
@@ -295,9 +301,11 @@ enum Agent {
             case "recall":
                 if let h = (args["hours"] as? Double) ?? (args["hours"] as? Int).map(Double.init) { r = Memory.transcript(hours: h); if r.isEmpty { r = "(nothing heard in the last \(h) hours)" } }
                 else { r = Memory.search(args["query"] as? String ?? "") }
-            case "remember": r = Memory.remember(args["note"] as? String ?? "")
+            case "remember":
+                let note = (args["note"] ?? args["text"] ?? args["fact"] ?? args["content"] ?? args.values.first) as? String ?? ""
+                r = note.isEmpty ? "nothing to remember: pass {\"note\": \"...\"}" : Memory.remember(note)
             case "forget": r = Memory.forgetNote(matching: args["note"] as? String ?? "")
-            default: r = "unknown tool \(name)"
+            default: r = "unknown tool \(name). Available: \(Agent.toolNames.joined(separator: ", ")). Use exactly [TOOL:name]{json} and nothing else on that line."
             }
             DispatchQueue.main.async { done(r) }
         }
@@ -318,8 +326,9 @@ enum Agent {
 
     /// Parse "[TOOL:name]{json}" from a reply.
     static func parse(_ r: String) -> (String, [String: Any], Range<String.Index>)? {
-        guard let m = r.range(of: #"\[TOOL:([a-z_]+)\]"#, options: .regularExpression) else { return nil }
-        let name = String(r[m].dropFirst(6).dropLast())
+        // tolerate "[TOOL: Remember]", "[tool:open-url]", "[TOOL:remember ]" from less obedient models
+        guard let m = r.range(of: #"\[TOOL:\s*([A-Za-z_\-]+)\s*\]"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
+        let name = String(r[m].dropFirst(6).dropLast()).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: "-", with: "_")
         var rest = r[m.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         if rest.hasPrefix("```") { rest = rest.replacingOccurrences(of: #"^```\w*\n?"#, with: "", options: .regularExpression) }
         // take the first balanced {...}

@@ -714,10 +714,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func notify(_ s: String) { statusItem.button?.title = "◎ " + s; DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.statusItem.button?.title = "◎" } }
     func applicationWillTerminate(_ n: Notification) { if Stats.shared.snap.fanManual { FanControl.set(nil) } }
 
+    private var overlayClosing = false
     @objc func toggleOverlay() {
         if let o = overlay {
-            o.view.stop()
-            NSAnimationContext.runAnimationGroup({ c in c.duration = 0.3; o.animator().alphaValue = 0 }) { o.orderOut(nil); self.overlay = nil }
+            if overlayClosing {   // clicked again mid fade-out: bring the same window back instead of stacking a new one
+                overlayClosing = false; o.view.start()
+                NSAnimationContext.runAnimationGroup { c in c.duration = 0.2; o.animator().alphaValue = 1 }
+                return
+            }
+            overlayClosing = true; o.view.stop()
+            NSAnimationContext.runAnimationGroup({ c in c.duration = 0.3; o.animator().alphaValue = 0 }) { [weak self] in
+                guard let self = self, self.overlay === o, self.overlayClosing else { return }   // superseded: leave the live one alone
+                o.orderOut(nil); self.overlay = nil; self.overlayClosing = false
+            }
         } else if let screen = NSScreen.main {
             let o = OverlayWindow(screen: screen); overlay = o
             o.alphaValue = 0; o.orderFrontRegardless()

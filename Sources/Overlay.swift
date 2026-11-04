@@ -108,7 +108,9 @@ final class OverlayView: NSView {
         update(); timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in self.update() }
         DispatchQueue.global().async { Stats.shared.refreshSlow() }
     }
-    func stop() { timer?.invalidate() }
+    func stop() { timer?.invalidate(); timer = nil }
+    /// Resume updates after a cancelled fade-out (no reveal animation).
+    func start() { guard timer == nil else { return }; update(); timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in self.update() } }
 
     func update() {
         let s = Stats.shared.refresh()

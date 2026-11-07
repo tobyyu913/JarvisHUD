@@ -153,7 +153,8 @@ enum Installer {
             try? FileManager.default.removeItem(at: dest)
             let dl = sh("curl -L --fail --max-time 600 -o '\(dest.path)' '\(url)' 2>&1 | tail -1; xattr -w com.apple.quarantine '0083;\(String(Int(Date().timeIntervalSince1970), radix: 16));JARVIS;' '\(dest.path)'", timeout: 620)
             guard FileManager.default.fileExists(atPath: dest.path) else { return "VERDICT: FAIL — download failed: \(dl.prefix(200))" }
-            let (verdict, detail, appPath) = inspect(dest)
+            let suspicious = stars < 200 || repo["archived"] as? Bool == true || (repo["license"] as? [String: Any]) == nil
+            let (verdict, detail, appPath) = inspect(dest, suspicious: suspicious)
             last = Vetted(source: "github", id: id, name: (repo["name"] as? String) ?? id, file: dest, verdict: verdict, appPath: appPath, kind: (aname as NSString).pathExtension.lowercased())
             return "VERDICT: \(verdict)\n" + notes.joined(separator: "\n") + "\nDownloaded to: \(dest.path)\n" + detail
         default:
@@ -169,22 +170,12 @@ enum Installer {
     }
 
     /// Security inspection of a downloaded dmg/pkg/zip/app: signature, notarization (Gatekeeper), VirusTotal, ClamAV.
-    static func inspect(_ file: URL) -> (String, String, String?) {
+    static func inspect(_ file: URL, suspicious: Bool = false) -> (String, String, String?) {
         var lines: [String] = []; var bad = 0, warn = 0; var appPath: String?
         let ext = file.pathExtension.lowercased()
         let sha = sh("shasum -a 256 '\(file.path)' | cut -d' ' -f1", timeout: 120)
         lines.append("SHA-256: \(sha)")
-
-        // 1. VirusTotal (hash lookup; the file is never uploaded)
-        if !vtKey.isEmpty, !sha.isEmpty {
-            let (d, code) = http("https://www.virustotal.com/api/v3/files/\(sha)", headers: ["x-apikey": vtKey])
-            if code == 200, let j = json(d) as? [String: Any], let st = ((j["data"] as? [String: Any])?["attributes"] as? [String: Any])?["last_analysis_stats"] as? [String: Any] {
-                let mal = st["malicious"] as? Int ?? 0, sus = st["suspicious"] as? Int ?? 0, ok = st["harmless"] as? Int ?? 0, und = st["undetected"] as? Int ?? 0
-                lines.append("VirusTotal: \(mal) malicious, \(sus) suspicious, \(ok + und) clean of \(mal + sus + ok + und) engines")
-                if mal > 0 { bad += 1 } else if sus > 2 { warn += 1 }
-            } else if code == 404 { lines.append("VirusTotal: this exact file has never been scanned there (no verdict); relying on Apple notarization + local scan") ; warn += 0 }
-            else { lines.append("VirusTotal: lookup failed (HTTP \(code))") }
-        } else { lines.append("VirusTotal: no API key set (◎ → VirusTotal Key…), skipped") }
+        var notarizedAll = true, sawTarget = false
 
         // 2. unpack to find the app / pkg
         var targets: [String] = []
@@ -213,6 +204,7 @@ enum Installer {
             lines.append("\((t as NSString).lastPathComponent): signature → \(sign.isEmpty ? "(none)" : sign)\n  Gatekeeper → \(gate)")
             let notarized = gate.contains("accepted") && (gate.contains("Notarized") || gate.contains("Mac App Store") || gate.contains("Apple System"))
             let signedDevID = sign.contains("Developer ID") || sign.contains("Apple")
+            sawTarget = true; if !notarized { notarizedAll = false }
             if gate.contains("rejected") || sign.contains("not signed") || sign.contains("code object is not signed") { bad += 1 }
             else if !notarized { warn += 1; lines.append("  → not notarized by Apple (no Apple malware scan on record)\(signedDevID ? ", but signed with a Developer ID" : "")") }
             if !isPkg {
@@ -221,7 +213,21 @@ enum Installer {
                 if !archs.isEmpty { lines.append("  built for \(archs)\(archs.contains("arm64") ? "" : " (Intel only: runs under Rosetta on this Mac)"), minimum macOS \(minOS.isEmpty ? "?" : minOS)") }
             }
         }
-        // 4. ClamAV if present
+        // 4. VirusTotal (hash lookup, the file is never uploaded). With a key it always runs. Without one it is
+        //    only *mentioned* when something is off: Apple-notarized apps from reputable sources need no nagging.
+        let sketchy = suspicious || !notarizedAll || !sawTarget || bad > 0 || warn > 0
+        if !vtKey.isEmpty, !sha.isEmpty {
+            let (d, code) = http("https://www.virustotal.com/api/v3/files/\(sha)", headers: ["x-apikey": vtKey])
+            if code == 200, let j = json(d) as? [String: Any], let st = ((j["data"] as? [String: Any])?["attributes"] as? [String: Any])?["last_analysis_stats"] as? [String: Any] {
+                let mal = st["malicious"] as? Int ?? 0, sus = st["suspicious"] as? Int ?? 0, ok = st["harmless"] as? Int ?? 0, und = st["undetected"] as? Int ?? 0
+                lines.append("VirusTotal: \(mal) malicious, \(sus) suspicious, \(ok + und) clean of \(mal + sus + ok + und) engines")
+                if mal > 0 { bad += 1 } else if sus > 2 { warn += 1 }
+            } else if code == 404 { lines.append("VirusTotal: this exact file has never been scanned there (no verdict)") }
+            else { lines.append("VirusTotal: lookup failed (HTTP \(code))") }
+        } else if sketchy {
+            lines.append("VirusTotal: NOT CHECKED — this download is not fully trusted (see above), so an antivirus look-up is recommended before installing. Ask the user whether to add a free VirusTotal key (◎ → VirusTotal Key…, then re-vet) or to proceed at their own risk.")
+        }
+        // ClamAV if present
         if !sh("command -v clamscan", timeout: 3).isEmpty {
             let scanTarget = mount ?? targets.first ?? file.path
             let cl = sh("clamscan -r --infected --no-summary '\(scanTarget)' 2>&1 | head -3", timeout: 300)
@@ -229,7 +235,7 @@ enum Installer {
         } else { lines.append("ClamAV: not installed (optional: brew install clamav)") }
         if let m = mount { _ = sh("hdiutil detach '\(m)' -quiet 2>&1 || (sleep 1; hdiutil detach '\(m)' -force -quiet)", timeout: 30) }
 
-        let verdict = bad > 0 ? "FAIL (do not install)" : warn > 0 ? "WARN (signed but not fully vetted; install only if the user accepts the risk)" : "PASS (signed, notarized by Apple, no detections)"
+        let verdict = bad > 0 ? "FAIL (do not install)" : warn > 0 ? "WARN (signed but not fully vetted; install only if the user accepts the risk)" : "PASS (signed, notarized by Apple\(vtKey.isEmpty ? "" : ", no antivirus detections"))"
         return (verdict, lines.joined(separator: "\n"), appPath)
     }
 

@@ -228,7 +228,7 @@ final class SearchDialog: NSObject {
         Search.presets.forEach { popup.addItem(withTitle: $0.name) }; popup.selectItem(withTitle: Search.provider)
         popup.target = self; popup.action = #selector(changed); v.addSubview(popup)
         for (t, y) in [("Provider", 72), ("API key", 38)] { let l = NSTextField(labelWithString: t); l.frame = NSRect(x: 0, y: CGFloat(y), width: 70, height: 22); l.alignment = .right; v.addSubview(l) }
-        key.stringValue = Search.apiKey; v.addSubview(key)
+        key.stringValue = Search.apiKey; v.addSubview(key); key.frame.size.width = min(key.frame.width, 222); v.addSubview(PasteHelper.button(for: key, x: 304, y: 38))
         hint.frame = NSRect(x: 78, y: 10, width: 282, height: 20); hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor; v.addSubview(hint); changed()
         a.accessoryView = v; a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
@@ -399,6 +399,18 @@ enum Agent {
     }
 }
 
+/// "Paste" button next to a secret field: Cmd+V is unreliable in modal alerts (and over remote-desktop sessions).
+final class PasteHelper: NSObject {
+    static var keep: [PasteHelper] = []
+    let field: NSTextField
+    init(_ f: NSTextField) { field = f; super.init(); PasteHelper.keep.append(self) }
+    @objc func paste() { field.stringValue = (NSPasteboard.general.string(forType: .string) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+    static func button(for f: NSTextField, x: CGFloat, y: CGFloat) -> NSButton {
+        let h = PasteHelper(f); let b = NSButton(title: "Paste", target: h, action: #selector(paste)); b.bezelStyle = .rounded; b.controlSize = .small
+        b.frame = NSRect(x: x, y: y - 1, width: 56, height: 24); return b
+    }
+}
+
 // MARK: - Provider settings dialog
 final class ProviderDialog: NSObject {
     let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
@@ -415,6 +427,7 @@ final class ProviderDialog: NSObject {
         popup.frame.origin = CGPoint(x: 78, y: 124); v.addSubview(popup)
         let pl = NSTextField(labelWithString: "Provider"); pl.frame = NSRect(x: 0, y: 126, width: 70, height: 22); pl.alignment = .right; v.addSubview(pl)
         row("Base URL", base, 92); row("Model", model, 64); row("API key", key, 36)
+        key.frame.size.width = 222; v.addSubview(PasteHelper.button(for: key, x: 304, y: 36))
         hint.frame = NSRect(x: 78, y: 8, width: 282, height: 20); hint.font = .systemFont(ofSize: 10); hint.textColor = .secondaryLabelColor; v.addSubview(hint)
         base.stringValue = AI.base; model.stringValue = AI.model; key.stringValue = AI.apiKey; updateHint()
         a.accessoryView = v; a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel")
@@ -753,7 +766,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc func setVT() {
         let a = NSAlert(); a.messageText = "VirusTotal API key"; a.informativeText = "Used to look up the hash of every download before an install (the file itself is never uploaded). Free key: virustotal.com → Sign up → API key."
-        let f = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); f.stringValue = Installer.vtKey; a.accessoryView = f
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        let f = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 296, height: 24)); f.stringValue = Installer.vtKey; v.addSubview(f); v.addSubview(PasteHelper.button(for: f, x: 304, y: 1)); a.accessoryView = v
         a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel"); NSApp.activate(ignoringOtherApps: true)
         if a.runModal() == .alertFirstButtonReturn { UserDefaults.standard.set(f.stringValue.trimmingCharacters(in: .whitespaces), forKey: "vtKey"); buildMenu() }
     }

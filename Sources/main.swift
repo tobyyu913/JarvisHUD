@@ -18,6 +18,7 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - SEARCH_INSTRUCTION
 - You have been LISTENING all day through the microphone (on-device). Everything heard is logged with timestamps for 14 days. If asked what happened today, what someone said, or where something was left, use the recall tool to search the log before answering; the last 30 minutes may already be attached below. Treat the log as possibly garbled speech-to-text.
 - When the user asks you to remember something (where they left the keys, a fact, a reminder), use the remember tool. Your remembered notes are listed below under "Remembered notes"; use them to answer.
+- App shopping: when the user wants an app for some purpose, find options online (find_app), present a short numbered choice and wait; after they pick, vet the download for malware and signatures (app_vet), install it (install_app), and then teach them to use it properly (app_docs → full instructions).
 - You are also this Mac's engineer: when something is slow, broken or will not start, investigate with diagnose / app_check / logs / shell, look it up online if needed, explain the cause plainly, and repair it yourself when safe (see the tool rules).
 - Disk clean-up: scan first (disk_scan), explain the drive in three groups (safe / slower afterwards / never), then act only through disk_clean. The user is asked to confirm in the app, so do not ask for permission in text.
 - Fans: use the fans tool. "max" = the fan's max rpm, "quiet" = minimum, "cool it down" = ~70% of max.
@@ -238,7 +239,7 @@ enum Agent {
     static var confirmActions: Bool { get { UserDefaults.standard.object(forKey: "agentConfirm") as? Bool ?? true } set { UserDefaults.standard.set(newValue, forKey: "agentConfirm") } }
     static let maxSteps = 8
 
-    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean", "diagnose", "app_check", "logs"]
+    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean", "diagnose", "app_check", "logs", "find_app", "app_vet", "install_app", "app_docs"]
     static let toolDoc = """
     You are an AGENT on this Mac: you can act, not just talk. To use a tool, output a line in exactly this form (one tool per reply, nothing else on that line):
     [TOOL:name]{"arg": "value"}
@@ -260,6 +261,11 @@ enum Agent {
     - diagnose {}  3-second health snapshot: load, memory pressure, swap, thermal throttling, top CPU/memory processes, known background hogs (Spotlight, Time Machine, photoanalysis…), disk, crash reports in 24 h, stuck processes, login items, network/DNS, power, pending updates.
     - app_check {"app": "Name"}  deep check of one app: path/version/architecture vs this Mac, minimum macOS, quarantine, code signature, Gatekeeper verdict, whether it is running, its recent crash reports (exception type), and errors from the unified log.
     - logs {"process": "Name", "minutes": 10, "filter": "optional text"}  errors and faults from the unified log for a process (or any process if omitted).
+    - find_app {"query": "markdown editor"}  search Homebrew casks/formulae, GitHub releases, the Mac App Store and the web for apps matching a short query (2-4 words). Returns candidates with source, id, stars/ratings, price and descriptions.
+    - app_vet {"source": "brew_cask|brew|mas|github", "id": "..."}  download the real artifact and run the security checks (code signature, Apple notarization / Gatekeeper, VirusTotal hash lookup if a key is set, ClamAV if installed, architecture, min macOS). Installs nothing. Returns VERDICT: PASS / WARN / FAIL plus details.
+    - install_app {"source": "...", "id": "..."}  install a vetted app (the app asks the user to confirm). Refuses without a prior app_vet or after FAIL.
+    - app_docs {"source": "...", "id": "..."}  README / homepage / caveats / App Store description, to write usage instructions from.
+    Finding and installing apps: when the user describes an app they want, call find_app with a short query (try a second query if the first finds little), then present 3-5 options as a numbered list in prose (name, where it comes from, stars or rating, price, one line on why it fits, and any warning like archived or Intel-only). Then STOP and let the user choose; this is the one time you wait for an answer. Once chosen: app_vet → if PASS or WARN, install_app (say what WARN means in one line) → app_docs → then give FULL instructions: how to open it the first time (Gatekeeper prompt, permissions it will ask for and why), initial setup, the main features and how to use each, useful shortcuts, where settings live, and how to uninstall. On FAIL, do not install; explain why and offer the next option. Prefer, in order: Mac App Store (sandboxed) or Homebrew cask (checksummed) over raw GitHub downloads.
     Troubleshooting: when the user asks why the Mac is slow, hot, laggy, frozen, why an app will not open / crashes / hangs, why Wi-Fi or sound or Bluetooth misbehaves, etc.: run diagnose first (app_check for a named app), then dig with shell/logs as needed, and search the web when the local evidence does not explain it (search the exact error text, or the symptom plus the macOS version and Mac model). Give the cause in plain words, then FIX IT YOURSELF when the fix is safe and reversible: quit or restart a runaway process, relaunch Finder/Dock/SystemUIServer/ControlCenter, restart user services (launchctl kickstart -k gui/$UID/...), remove a quarantine flag (xattr -d com.apple.quarantine), reset an app's caches via disk_clean or its preference file (move it aside, do not delete), toggle Wi-Fi (networksetup), flush DNS (dscacheutil -flushcache; killall -HUP mDNSResponder), reindex Spotlight (mdutil -E). For anything that needs admin rights, a restart, Safe Mode, or reinstalling macOS, tell the user exactly what to do and why.
     Drive cleaning: when asked to clean, free space or explain what is using the disk, run disk_scan first, then summarise in three short groups with sizes: what is safe to clean, what can be cleaned but makes something slower (say what), and what you will not touch (user data). Propose a concrete list of ids, then call disk_clean with it (the user confirms in the app). Never use shell rm for cleaning; disk_clean is the only way.
     Rules: be decisive, act first, then report briefly. Never ask permission in text; the app confirms destructive commands itself. Never fabricate a tool result. Paths may use ~.
@@ -322,6 +328,10 @@ enum Agent {
                 let note = (args["note"] ?? args["text"] ?? args["fact"] ?? args["content"] ?? args.values.first) as? String ?? ""
                 r = note.isEmpty ? "nothing to remember: pass {\"note\": \"...\"}" : Memory.remember(note)
             case "forget": r = Memory.forgetNote(matching: args["note"] as? String ?? "")
+            case "find_app": r = Installer.find(query: args["query"] as? String ?? args["need"] as? String ?? "")
+            case "app_vet": DispatchQueue.main.async { AI.onStatus?("VETTING") }; r = Installer.vet(source: args["source"] as? String ?? "", id: "\(args["id"] ?? "")")
+            case "install_app": DispatchQueue.main.async { AI.onStatus?("INSTALLING") }; r = Installer.install(source: args["source"] as? String ?? "", id: "\(args["id"] ?? "")")
+            case "app_docs": r = Installer.docs(source: args["source"] as? String ?? "", id: "\(args["id"] ?? "")")
             case "diagnose": r = Doctor.diagnose()
             case "app_check": r = Doctor.appCheck(args["app"] as? String ?? "")
             case "logs":
@@ -352,6 +362,7 @@ enum Agent {
             return risky.contains { c.contains($0) } ? "Run command?\n\n\(c)" : nil
         case "applescript": return "Run AppleScript?\n\n\(args["script"] as? String ?? "")"
         case "write_file": return "Write file \(args["path"] as? String ?? "")?"
+        case "install_app": return Installer.describeInstall(source: args["source"] as? String ?? "", id: "\(args["id"] ?? "")")
         case "disk_clean":
             if args["dry_run"] as? Bool == true { return nil }
             return Cleaner.describe(ids: Agent.ids(args)) ?? "Nothing cleanable in that request. Continue?"
@@ -692,6 +703,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.addItem(withTitle: "Forget Remembered Notes", action: #selector(forgetNotes), keyEquivalent: "")
         vm.addItem(withTitle: "Show Memory Folder", action: #selector(showMemory), keyEquivalent: "")
         m.addItem(withTitle: "Clean Up Disk…", action: #selector(cleanDisk), keyEquivalent: "")
+        m.addItem(withTitle: "VirusTotal Key…  (\(Installer.vtKey.isEmpty ? "not set" : "set"))", action: #selector(setVT), keyEquivalent: "")
         let c = m.addItem(withTitle: "Ask Before Risky Actions", action: #selector(toggleConfirm), keyEquivalent: ""); c.state = Agent.confirmActions ? .on : .off
         m.addItem(withTitle: "Web Search…  (\(Search.provider))", action: #selector(setSearch), keyEquivalent: "")
         m.addItem(withTitle: "AI Provider…  (\(AI.providerName) · \(AI.model))", action: #selector(setProvider), keyEquivalent: "")
@@ -715,6 +727,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func forgetTranscript() { Memory.forgetToday() }
     @objc func forgetAllHeard() { Memory.forgetAllHeard() }
     @objc func forgetNotes() { Memory.forgetAllNotes() }
+    @objc func setVT() {
+        let a = NSAlert(); a.messageText = "VirusTotal API key"; a.informativeText = "Used to look up the hash of every download before an install (the file itself is never uploaded). Free key: virustotal.com → Sign up → API key."
+        let f = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); f.stringValue = Installer.vtKey; a.accessoryView = f
+        a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel"); NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn { UserDefaults.standard.set(f.stringValue.trimmingCharacters(in: .whitespaces), forKey: "vtKey"); buildMenu() }
+    }
     @objc func cleanDisk() {
         if !active { showHUD() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.panel?.hud.submit("Scan my disk: tell me what is using it, what is safe to clean, what can be cleaned but would make something slower, and what you will not touch. Then propose a clean-up.") }

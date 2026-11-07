@@ -13,6 +13,7 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - Phrases in character: "At your service, sir." "For you, sir, always." "As you wish." "Might I suggest…" "I've taken the liberty of…" "Shall I…?" "I would advise against it, sir." "Working on it, sir." "Right away, sir."
 - Report facts crisply, like a status readout ("Power at 92 percent. Thermals nominal."). Offer one pertinent recommendation when useful.
 - Keep replies brief: one to three sentences unless asked for detail. Plain text only, no markdown headers or bullet lists.
+- The conversation history below may span several days and app restarts; earlier turns are real context the user expects you to remember (they can clear it from the menu).
 - LANGUAGE: always answer in the language the user wrote or spoke in. In Chinese address them as 先生 and keep the same calm, dry butler manner (e.g. 「遵命，先生。」「恕我直言，先生，我不建议这么做。」); in Japanese use ご主人様 or 「〜でございます」 register; in other languages use the equivalent of "sir". Tool calls stay in the exact [TOOL:name]{json} form regardless of language. The speech log may mix languages; read it as is.
 - You have live telemetry about this Mac appended below; use it when asked about the machine's status, fans, temperatures, battery, memory, processes, network, etc.
 - SEARCH_INSTRUCTION
@@ -79,7 +80,18 @@ enum AI {
         d.set(name, forKey: "aiName"); d.set(kind.rawValue, forKey: "aiKind"); d.set(base, forKey: "aiBase"); d.set(model, forKey: "aiModel"); d.set(key, forKey: "aiKey")
     }
     /// role: "user" | "assistant", plain text
-    static var history: [(role: String, text: String)] = []
+    /// Conversation memory. Persisted to disk so JARVIS remembers the chat across restarts (last 60 turns kept).
+    static let historyFile = Memory.dir.appendingPathComponent("history.json")
+    static var history: [(role: String, text: String)] = loadHistory() { didSet { saveHistory() } }
+    static func loadHistory() -> [(role: String, text: String)] {
+        guard let d = try? Data(contentsOf: historyFile), let arr = try? JSONSerialization.jsonObject(with: d) as? [[String: String]] else { return [] }
+        return arr.compactMap { r in (r["role"] ?? "").isEmpty ? nil : (role: r["role"]!, text: r["text"] ?? "") }
+    }
+    static func saveHistory() {
+        if history.count > 60 { history.removeFirst(history.count - 60); return }   // didSet runs again with the trimmed copy
+        let arr = history.map { ["role": $0.role, "text": $0.text] }
+        if let d = try? JSONSerialization.data(withJSONObject: arr) { try? d.write(to: historyFile, options: .atomic) }
+    }
 
     static var spoken = false
     static var onStatus: ((String) -> Void)?
@@ -845,6 +857,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let old = panel { old.orderOut(nil) }   // defensive: never leave an orphan behind
         active = true
         let p = HUDPanel(screen: screen); panel = p
+        // show the tail of the remembered conversation so the context is visible after a restart
+        let prior = AI.history.suffix(8)
+        if !prior.isEmpty, p.hud.output.string.isEmpty {
+            for m in prior { p.hud.append(m.role == "user" ? "YOU ▸" : "JARVIS ▸", String(m.text.prefix(600))) }
+            p.hud.append("", "— earlier conversation, still remembered —")
+        }
         p.hud.onClose = { [weak self] in self?.hideHUD() }
         p.makeKeyAndOrderFront(nil)
         p.hud.show()

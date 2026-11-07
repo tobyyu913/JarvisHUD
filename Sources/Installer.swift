@@ -32,56 +32,80 @@ enum Installer {
     static func enc(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?.replacingOccurrences(of: "&", with: "%26").replacingOccurrences(of: "+", with: "%2B") ?? s }
 
     // MARK: - find
-    static func find(query: String) -> String {
-        var sections: [String] = []
-        let group = DispatchGroup(); let lock = NSLock(); var parts: [Int: String] = [:]
-        func part(_ i: Int, _ f: @escaping () -> String) { group.enter(); DispatchQueue.global().async { let r = f(); lock.lock(); parts[i] = r; lock.unlock(); group.leave() } }
+    /// Homebrew's public analytics: cask installs over the last 30 days. Cached for a day on disk.
+    static func caskInstalls() -> [String: Int] {
+        let cache = stage.appendingPathComponent("cask-analytics.json")
+        try? FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        var data: Data? = nil
+        if let m = (try? cache.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, Date().timeIntervalSince(m) < 86400 { data = try? Data(contentsOf: cache) }
+        if data == nil { let (d, code) = http("https://formulae.brew.sh/api/analytics/cask-install/30d.json", timeout: 25); if code == 200, let d = d { data = d; try? d.write(to: cache) } }
+        guard let j = json(data) as? [String: Any], let items = j["items"] as? [[String: Any]] else { return [:] }
+        var out: [String: Int] = [:]
+        for i in items { if let c = i["cask"] as? String, let n = i["count"] as? String { out[c] = Int(n.replacingOccurrences(of: ",", with: "")) ?? 0 } }
+        return out
+    }
 
-        part(0) {   // Homebrew casks (GUI apps) and formulae
-            guard brew != nil else { return "Homebrew: not installed on this Mac (brew.sh; needs admin once). Casks unavailable." }
-            let out = sh("brew search --desc --casks '\(query.replacingOccurrences(of: "'", with: ""))' 2>/dev/null | grep -v '^==>' | grep ':' | head -10", timeout: 90)
-            let f = sh("brew search --desc --formulae '\(query.replacingOccurrences(of: "'", with: ""))' 2>/dev/null | grep -v '^==>' | grep ':' | head -5", timeout: 90)
-            var s = "Homebrew casks (GUI apps, install id = text before the colon; source=brew_cask):\n" + (out.isEmpty ? "  none" : "  " + out.replacingOccurrences(of: "\n", with: "\n  "))
-            if !f.isEmpty { s += "\nHomebrew formulae (command-line tools; source=brew):\n  " + f.replacingOccurrences(of: "\n", with: "\n  ") }
-            return s
+    struct Candidate { let line: String; let popular: Bool; let score: Int }
+
+    static func find(query: String) -> String {
+        let group = DispatchGroup(); let lock = NSLock(); var all: [Candidate] = []; var notes: [String] = []
+        func add(_ c: [Candidate]) { lock.lock(); all += c; lock.unlock() }
+        func note(_ n: String) { lock.lock(); notes.append(n); lock.unlock() }
+        func part(_ f: @escaping () -> Void) { group.enter(); DispatchQueue.global().async { f(); group.leave() } }
+        let q = query.replacingOccurrences(of: "'", with: "")
+
+        part {   // Homebrew casks, ranked by 30-day installs
+            guard brew != nil else { note("Homebrew is not installed on this Mac (brew.sh; needs admin once), so casks are unavailable."); return }
+            let installs = caskInstalls()
+            let out = sh("brew search --desc --casks '\(q)' 2>/dev/null | grep -v '^==>' | grep ':' | head -25", timeout: 90)
+            var cs: [Candidate] = []
+            for l in out.split(separator: "\n") {
+                let id = String(l.split(separator: ":").first ?? "").trimmingCharacters(in: .whitespaces)
+                let n = installs[id] ?? 0
+                cs.append(Candidate(line: "  [brew_cask] \(l) — \(n >= 1000 ? "\(n / 1000)k" : "\(n)") installs/30d", popular: n >= 500, score: n))
+            }
+            add(cs)
+            let f = sh("brew search --desc --formulae '\(q)' 2>/dev/null | grep -v '^==>' | grep ':' | head -5", timeout: 90)
+            if !f.isEmpty { note("Command-line tools in Homebrew (source=brew): " + f.replacingOccurrences(of: "\n", with: "; ")) }
         }
-        part(1) {   // GitHub
-            let (d, code) = http("https://api.github.com/search/repositories?q=\(enc(query + " macos"))&sort=stars&order=desc&per_page=8", headers: ["Accept": "application/vnd.github+json"])
-            guard code == 200, let j = json(d) as? [String: Any], let items = j["items"] as? [[String: Any]] else { return "GitHub: search failed (HTTP \(code))" }
-            let rows = items.compactMap { r -> String? in
+        part {   // GitHub, ranked by stars
+            let (d, code) = http("https://api.github.com/search/repositories?q=\(enc(query + " macos"))&sort=stars&order=desc&per_page=10", headers: ["Accept": "application/vnd.github+json"])
+            guard code == 200, let j = json(d) as? [String: Any], let items = j["items"] as? [[String: Any]] else { note("GitHub search failed (HTTP \(code))"); return }
+            add(items.compactMap { r -> Candidate? in
                 guard let full = r["full_name"] as? String else { return nil }
-                let desc = (r["description"] as? String ?? "").prefix(110)
-                let stars = r["stargazers_count"] as? Int ?? 0
-                let pushed = (r["pushed_at"] as? String ?? "").prefix(10)
+                let stars = r["stargazers_count"] as? Int ?? 0, archived = r["archived"] as? Bool == true
                 let lic = ((r["license"] as? [String: Any])?["spdx_id"] as? String) ?? "no license"
-                let archived = r["archived"] as? Bool == true ? " ARCHIVED" : ""
-                return "  \(full) — ★\(stars), updated \(pushed), \(lic)\(archived): \(desc)"
-            }
-            return "GitHub (source=github, id = owner/repo; only repos that publish a .dmg/.zip/.pkg release can be installed):\n" + (rows.isEmpty ? "  none" : rows.joined(separator: "\n"))
+                let desc = (r["description"] as? String ?? "").prefix(110)
+                return Candidate(line: "  [github] \(full) — ★\(stars), updated \((r["pushed_at"] as? String ?? "").prefix(10)), \(lic)\(archived ? ", ARCHIVED" : ""): \(desc)",
+                                 popular: stars >= 3000 && !archived && lic != "no license", score: stars)
+            })
         }
-        part(2) {   // Mac App Store
-            let (d, code) = http("https://itunes.apple.com/search?entity=macSoftware&limit=8&term=\(enc(query))")
-            guard code == 200, let j = json(d) as? [String: Any], let items = j["results"] as? [[String: Any]] else { return "Mac App Store: search failed (HTTP \(code))" }
-            let mas = sh("command -v mas", timeout: 3).isEmpty ? " (the `mas` CLI is not installed: brew install mas, then sign in to the App Store once)" : ""
-            let rows = items.compactMap { r -> String? in
+        part {   // Mac App Store, ranked by number of ratings
+            let (d, code) = http("https://itunes.apple.com/search?entity=macSoftware&limit=10&term=\(enc(query))")
+            guard code == 200, let j = json(d) as? [String: Any], let items = j["results"] as? [[String: Any]] else { note("Mac App Store search failed (HTTP \(code))"); return }
+            add(items.compactMap { r -> Candidate? in
                 guard let name = r["trackName"] as? String, let id = r["trackId"] as? Int else { return nil }
-                let price = (r["formattedPrice"] as? String) ?? "?"
-                let rating = String(format: "%.1f", r["averageUserRating"] as? Double ?? 0), n = r["userRatingCount"] as? Int ?? 0
-                let seller = r["sellerName"] as? String ?? ""
+                let n = r["userRatingCount"] as? Int ?? 0, rating = r["averageUserRating"] as? Double ?? 0
                 let desc = (r["description"] as? String ?? "").replacingOccurrences(of: "\n", with: " ").prefix(100)
-                return "  \(name) (id \(id)) — \(price), rating \(rating) (\(n)), by \(seller): \(desc)"
-            }
-            return "Mac App Store (source=mas, id = number; Apple-reviewed, sandboxed\(mas)):\n" + (rows.isEmpty ? "  none" : rows.joined(separator: "\n"))
+                return Candidate(line: "  [mas] \(name) (id \(id)) — \(r["formattedPrice"] as? String ?? "?"), \(String(format: "%.1f", rating))★ from \(n) ratings, by \(r["sellerName"] as? String ?? ""): \(desc)",
+                                 popular: n >= 100 && rating >= 4.0, score: n * 10)
+            })
         }
-        part(3) {   // web
-            guard Search.enabled else { return "" }
+        part {   // web, only as colour
+            guard Search.enabled else { return }
             let sem = DispatchSemaphore(value: 0); var out = ""
             Search.run("best \(query) app for mac") { out = $0; sem.signal() }; _ = sem.wait(timeout: .now() + 25)
-            return out.isEmpty ? "" : "Web search (\"best \(query) app for mac\"):\n" + String(out.prefix(2500))
+            if !out.isEmpty { note("Web search (\"best \(query) app for mac\"): " + String(out.prefix(2000))) }
         }
         group.wait()
-        for i in 0..<4 { if let p = parts[i], !p.isEmpty { sections.append(p) } }
-        return sections.joined(separator: "\n\n")
+        let popular = all.filter { $0.popular }.sorted { $0.score > $1.score }
+        let rest = all.filter { !$0.popular }.sorted { $0.score > $1.score }
+        var out = "WELL-KNOWN OPTIONS (big, established apps — offer these first; id/source in brackets):\n"
+        out += popular.isEmpty ? "  none found for this query\n" : popular.prefix(10).map { $0.line }.joined(separator: "\n") + "\n"
+        out += "\nLESS ESTABLISHED (small, new, unlicensed or archived — mention only if the user turns down the well-known ones, and say they are less proven):\n"
+        out += rest.isEmpty ? "  none\n" : rest.prefix(12).map { $0.line }.joined(separator: "\n") + "\n"
+        if !notes.isEmpty { out += "\n" + notes.joined(separator: "\n") }
+        return out
     }
 
     // MARK: - vet

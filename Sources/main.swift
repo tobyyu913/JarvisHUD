@@ -18,6 +18,7 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - SEARCH_INSTRUCTION
 - You have been LISTENING all day through the microphone (on-device). Everything heard is logged with timestamps for 14 days. If asked what happened today, what someone said, or where something was left, use the recall tool to search the log before answering; the last 30 minutes may already be attached below. Treat the log as possibly garbled speech-to-text.
 - When the user asks you to remember something (where they left the keys, a fact, a reminder), use the remember tool. Your remembered notes are listed below under "Remembered notes"; use them to answer.
+- Security guard: on "scan for viruses / is my Mac infected / check for malware", run malware_scan and explain calmly; you also vet every new download automatically and the result is shown to the user as it happens.
 - App shopping: when the user wants an app for some purpose, find options online (find_app), present a short numbered choice and wait; after they pick, vet the download for malware and signatures (app_vet), install it (install_app), and then teach them to use it properly (app_docs → full instructions).
 - You are also this Mac's engineer: when something is slow, broken or will not start, investigate with diagnose / app_check / logs / shell, look it up online if needed, explain the cause plainly, and repair it yourself when safe (see the tool rules).
 - Disk clean-up: scan first (disk_scan), explain the drive in three groups (safe / slower afterwards / never), then act only through disk_clean. The user is asked to confirm in the app, so do not ask for permission in text.
@@ -59,6 +60,8 @@ enum AI {
         Preset(name: "Gemini",     kind: .gemini,    base: "https://generativelanguage.googleapis.com/v1beta",      model: "gemini-2.5-flash",        keyURL: "aistudio.google.com/apikey"),
         Preset(name: "OpenAI",     kind: .openai,    base: "https://api.openai.com/v1",                              model: "gpt-4o-mini",             keyURL: "platform.openai.com/api-keys"),
         Preset(name: "Anthropic",  kind: .anthropic, base: "https://api.anthropic.com/v1",                           model: "claude-opus-5-5",         keyURL: "console.anthropic.com"),
+        Preset(name: "Aliyun 阿里云百炼 (China)", kind: .openai, base: "https://dashscope.aliyuncs.com/compatible-mode/v1",   model: "qwen-plus",               keyURL: "bailian.console.aliyun.com/?apiKey=1"),
+        Preset(name: "Alibaba Model Studio (Intl)", kind: .openai, base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model: "qwen-plus",          keyURL: "modelstudio.console.alibabacloud.com/?tab=model#/api-key"),
         Preset(name: "OpenRouter", kind: .openai,    base: "https://openrouter.ai/api/v1",                           model: "meta-llama/llama-3.3-70b-instruct", keyURL: "openrouter.ai/keys"),
         Preset(name: "xAI",        kind: .openai,    base: "https://api.x.ai/v1",                                    model: "grok-3-mini",             keyURL: "console.x.ai"),
         Preset(name: "Mistral",    kind: .openai,    base: "https://api.mistral.ai/v1",                              model: "mistral-small-latest",    keyURL: "console.mistral.ai"),
@@ -239,7 +242,7 @@ enum Agent {
     static var confirmActions: Bool { get { UserDefaults.standard.object(forKey: "agentConfirm") as? Bool ?? true } set { UserDefaults.standard.set(newValue, forKey: "agentConfirm") } }
     static let maxSteps = 8
 
-    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean", "diagnose", "app_check", "logs", "find_app", "app_vet", "install_app", "app_docs"]
+    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean", "diagnose", "app_check", "logs", "find_app", "app_vet", "install_app", "app_docs", "malware_scan", "quarantine_item"]
     static let toolDoc = """
     You are an AGENT on this Mac: you can act, not just talk. To use a tool, output a line in exactly this form (one tool per reply, nothing else on that line):
     [TOOL:name]{"arg": "value"}
@@ -265,6 +268,9 @@ enum Agent {
     - app_vet {"source": "brew_cask|brew|mas|github", "id": "..."}  download the real artifact and run the security checks (code signature, Apple notarization / Gatekeeper, VirusTotal hash lookup if a key is set, ClamAV if installed, architecture, min macOS). Installs nothing. Returns VERDICT: PASS / WARN / FAIL plus details.
     - install_app {"source": "...", "id": "..."}  install a vetted app (the app asks the user to confirm). Refuses without a prior app_vet or after FAIL.
     - app_docs {"source": "...", "id": "..."}  README / homepage / caveats / App Store description, to write usage instructions from.
+    - malware_scan {}  scan this Mac for malware (1-2 minutes): Gatekeeper/XProtect/FileVault/firewall state, launch agents & daemons, login items, cron, profiles, running processes, installed apps (verifiably real ones — Apple, App Store, notarized — are skipped), unknown hidden folders, executables in temp/shared places, programs disguised as documents, recent downloads, VirusTotal for flagged binaries if a key is set, ClamAV if installed. Returns SUSPICIOUS (act on these) and WORTH A LOOK (usually fine).
+    - quarantine_item {"path": "..."}  move a suspicious file/app/launch agent into a quarantine folder (unloads it, kills it, strips execute bits; reversible). The app asks the user to confirm. Refuses verified apps and system paths.
+    Virus / malware requests: run malware_scan, then report in three short parts: what is clearly fine (counts), what is suspicious and why in plain words, and what is merely unverified. For each suspicious item say what it most likely is (search the web for its name/path if unsure) and offer to quarantine it; quarantine with quarantine_item once the user agrees (one item per call). Never call something a virus without evidence; unsigned ≠ malicious, say "unverified".
     Finding and installing apps: when the user describes an app they want, call find_app with a short query (try a second query if the first finds little), then present 3-5 options from the WELL-KNOWN group only, as a numbered list in prose (name, where it comes from, popularity, price, one line on why it fits). Do not show the LESS ESTABLISHED group unless the well-known group is empty or the user turns the well-known ones down; when you do, say plainly that those are smaller, less-proven projects. Then STOP and let the user choose; this is the one time you wait for an answer. Once chosen: app_vet → if PASS, install_app straight away; if WARN, or the vet says VirusTotal is NOT CHECKED for an untrusted download, tell the user in one or two sentences what is off and ask whether to add a VirusTotal key for an antivirus look-up or proceed anyway (never mention VirusTotal for a PASS from a trusted source) → app_docs → then give FULL instructions: how to open it the first time (Gatekeeper prompt, permissions it will ask for and why), initial setup, the main features and how to use each, useful shortcuts, where settings live, and how to uninstall. On FAIL, do not install; explain why and offer the next option. Prefer, in order: Mac App Store (sandboxed) or Homebrew cask (checksummed) over raw GitHub downloads.
     Troubleshooting: when the user asks why the Mac is slow, hot, laggy, frozen, why an app will not open / crashes / hangs, why Wi-Fi or sound or Bluetooth misbehaves, etc.: run diagnose first (app_check for a named app), then dig with shell/logs as needed, and search the web when the local evidence does not explain it (search the exact error text, or the symptom plus the macOS version and Mac model). Give the cause in plain words, then FIX IT YOURSELF when the fix is safe and reversible: quit or restart a runaway process, relaunch Finder/Dock/SystemUIServer/ControlCenter, restart user services (launchctl kickstart -k gui/$UID/...), remove a quarantine flag (xattr -d com.apple.quarantine), reset an app's caches via disk_clean or its preference file (move it aside, do not delete), toggle Wi-Fi (networksetup), flush DNS (dscacheutil -flushcache; killall -HUP mDNSResponder), reindex Spotlight (mdutil -E). For anything that needs admin rights, a restart, Safe Mode, or reinstalling macOS, tell the user exactly what to do and why.
     Drive cleaning: when asked to clean, free space or explain what is using the disk, run disk_scan first, then summarise in three short groups with sizes: what is safe to clean, what can be cleaned but makes something slower (say what), and what you will not touch (user data). Propose a concrete list of ids, then call disk_clean with it (the user confirms in the app). Never use shell rm for cleaning; disk_clean is the only way.
@@ -328,6 +334,8 @@ enum Agent {
                 let note = (args["note"] ?? args["text"] ?? args["fact"] ?? args["content"] ?? args.values.first) as? String ?? ""
                 r = note.isEmpty ? "nothing to remember: pass {\"note\": \"...\"}" : Memory.remember(note)
             case "forget": r = Memory.forgetNote(matching: args["note"] as? String ?? "")
+            case "malware_scan": r = Guard.scan(status: { st in DispatchQueue.main.async { AI.onStatus?(st) } })
+            case "quarantine_item": r = Guard.quarantine(args["path"] as? String ?? "")
             case "find_app": r = Installer.find(query: args["query"] as? String ?? args["need"] as? String ?? "")
             case "app_vet": DispatchQueue.main.async { AI.onStatus?("VETTING") }; r = Installer.vet(source: args["source"] as? String ?? "", id: "\(args["id"] ?? "")")
             case "install_app": DispatchQueue.main.async { AI.onStatus?("INSTALLING") }; r = Installer.install(source: args["source"] as? String ?? "", id: "\(args["id"] ?? "")")
@@ -362,6 +370,7 @@ enum Agent {
             return risky.contains { c.contains($0) } ? "Run command?\n\n\(c)" : nil
         case "applescript": return "Run AppleScript?\n\n\(args["script"] as? String ?? "")"
         case "write_file": return "Write file \(args["path"] as? String ?? "")?"
+        case "quarantine_item": return "Quarantine (remove from use, reversible)?\n\n\(args["path"] as? String ?? "")"
         case "install_app": return Installer.describeInstall(source: args["source"] as? String ?? "", id: "\(args["id"] ?? "")")
         case "disk_clean":
             if args["dry_run"] as? Bool == true { return nil }
@@ -649,6 +658,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AI.save(name: "Gemini", kind: .gemini, base: AI.presets[1].base, model: UserDefaults.standard.string(forKey: "geminiModel") ?? "gemini-2.5-flash", key: k)
         }
         buildMenu()
+        Guard.Watcher.shared.onResult = { [weak self] f, v, d in self?.downloadChecked(f, v, d) }
+        Guard.Watcher.shared.start()
         // Edit menu so Cmd+V/C/X/A work in dialogs
         let main = NSMenu(); let editItem = NSMenuItem(); main.addItem(editItem)
         let edit = NSMenu(title: "Edit"); editItem.submenu = edit
@@ -703,6 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.addItem(withTitle: "Forget Remembered Notes", action: #selector(forgetNotes), keyEquivalent: "")
         vm.addItem(withTitle: "Show Memory Folder", action: #selector(showMemory), keyEquivalent: "")
         m.addItem(withTitle: "Clean Up Disk…", action: #selector(cleanDisk), keyEquivalent: "")
+        let wd = m.addItem(withTitle: "Check New Downloads Automatically", action: #selector(toggleWatch), keyEquivalent: ""); wd.state = Guard.Watcher.shared.enabled ? .on : .off
         m.addItem(withTitle: "VirusTotal Key…  (\(Installer.vtKey.isEmpty ? "not set" : "set"))", action: #selector(setVT), keyEquivalent: "")
         let c = m.addItem(withTitle: "Ask Before Risky Actions", action: #selector(toggleConfirm), keyEquivalent: ""); c.state = Agent.confirmActions ? .on : .off
         m.addItem(withTitle: "Web Search…  (\(Search.provider))", action: #selector(setSearch), keyEquivalent: "")
@@ -727,6 +739,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func forgetTranscript() { Memory.forgetToday() }
     @objc func forgetAllHeard() { Memory.forgetAllHeard() }
     @objc func forgetNotes() { Memory.forgetAllNotes() }
+    @objc func toggleWatch() { UserDefaults.standard.set(!Guard.Watcher.shared.enabled, forKey: "watchDownloads"); buildMenu() }
+    /// Result of the automatic download check: quiet one-liner for clean files, full HUD with details for anything off.
+    func downloadChecked(_ file: String, _ verdict: String, _ detail: String) {
+        let name = (file as NSString).lastPathComponent
+        let ok = verdict.hasPrefix("PASS")
+        if !active { showHUD() }
+        let msg = ok ? "I checked \(name) the moment it finished downloading: signed and notarized by Apple, no issues. Safe to open."
+                     : "Hold on, sir. \(name) just landed in \((file as NSString).deletingLastPathComponent.replacingOccurrences(of: Guard.home, with: "~")) and it does not pass my checks: \(verdict)\n\(detail.split(separator: "\n").filter { $0.contains("→") || $0.contains("VirusTotal") || $0.contains("ClamAV") || $0.contains("No .app") }.joined(separator: "\n"))\nI would not open it. Say \"quarantine it\" and I will put it out of reach, or ask me to look into it."
+        panel?.hud.append("JARVIS ▸", msg)
+        Memory.log("[download check] \(name): \(verdict)")
+        if ok { DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in if self?.panel?.hud.window?.isVisible == true && self?.panel?.hud.pendingConfirm == nil { self?.hideHUD() } } }
+    }
     @objc func setVT() {
         let a = NSAlert(); a.messageText = "VirusTotal API key"; a.informativeText = "Used to look up the hash of every download before an install (the file itself is never uploaded). Free key: virustotal.com → Sign up → API key."
         let f = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24)); f.stringValue = Installer.vtKey; a.accessoryView = f

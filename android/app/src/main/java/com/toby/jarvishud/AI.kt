@@ -33,6 +33,8 @@ object AI {
         Preset("Gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-flash", "aistudio.google.com/apikey"),
         Preset("OpenAI", "openai", "https://api.openai.com/v1", "gpt-4o-mini", "platform.openai.com/api-keys"),
         Preset("Anthropic", "anthropic", "https://api.anthropic.com/v1", "claude-opus-5-5", "console.anthropic.com"),
+        Preset("Aliyun 阿里云百炼 (China)", "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "bailian.console.aliyun.com/?apiKey=1"),
+        Preset("Alibaba Model Studio (Intl)", "openai", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-plus", "modelstudio.console.alibabacloud.com"),
         Preset("OpenRouter", "openai", "https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct", "openrouter.ai/keys"),
         Preset("xAI", "openai", "https://api.x.ai/v1", "grok-3-mini", "console.x.ai"),
         Preset("Mistral", "openai", "https://api.mistral.ai/v1", "mistral-small-latest", "console.mistral.ai"),

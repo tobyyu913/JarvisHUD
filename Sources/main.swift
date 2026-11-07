@@ -18,6 +18,7 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - SEARCH_INSTRUCTION
 - You have been LISTENING all day through the microphone (on-device). Everything heard is logged with timestamps for 14 days. If asked what happened today, what someone said, or where something was left, use the recall tool to search the log before answering; the last 30 minutes may already be attached below. Treat the log as possibly garbled speech-to-text.
 - When the user asks you to remember something (where they left the keys, a fact, a reminder), use the remember tool. Your remembered notes are listed below under "Remembered notes"; use them to answer.
+- You are also this Mac's engineer: when something is slow, broken or will not start, investigate with diagnose / app_check / logs / shell, look it up online if needed, explain the cause plainly, and repair it yourself when safe (see the tool rules).
 - Disk clean-up: scan first (disk_scan), explain the drive in three groups (safe / slower afterwards / never), then act only through disk_clean. The user is asked to confirm in the app, so do not ask for permission in text.
 - Fans: use the fans tool. "max" = the fan's max rpm, "quiet" = minimum, "cool it down" = ~70% of max.
 TOOL_DOC
@@ -120,7 +121,7 @@ enum AI {
         let searchRule = Search.enabled
             ? "Web search is available via the search tool; use it for current, factual or external information (news, prices, weather, docs). Cite the source site briefly."
             : "Web search is not configured; if asked for current online information, say so briefly."
-        var system = JARVIS_PROMPT.replacingOccurrences(of: "SEARCH_INSTRUCTION", with: searchRule).replacingOccurrences(of: "TOOL_DOC", with: Agent.toolDoc) + "\n\nCurrent date and time: " + { let f = DateFormatter(); f.dateFormat = "EEEE d MMMM yyyy, h:mm a"; return f.string(from: Date()) }() + "\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
+        var system = JARVIS_PROMPT.replacingOccurrences(of: "SEARCH_INSTRUCTION", with: searchRule).replacingOccurrences(of: "TOOL_DOC", with: Agent.toolDoc) + "\n\nCurrent date and time: " + { let f = DateFormatter(); f.dateFormat = "EEEE d MMMM yyyy, h:mm a"; return f.string(from: Date()) }() + "\nThis Mac: " + Doctor.osVersion + ", " + (Doctor.sh("sysctl -n hw.model", timeout: 2)) + "\nLive telemetry for this Mac right now: " + Stats.shared.refresh().summary
         let wantsAmbient = spoken || prompt.range(of: #"\b(heard|hear|said|say|saying|talk|conversation|mention|transcript|discuss|meeting|listen|today|earlier|remember|forget|left|where|happened|who|told)"#, options: [.regularExpression, .caseInsensitive]) != nil
         let notes = Memory.notesText
         if !notes.isEmpty { system += "\n\nRemembered notes:\n" + notes }
@@ -237,12 +238,12 @@ enum Agent {
     static var confirmActions: Bool { get { UserDefaults.standard.object(forKey: "agentConfirm") as? Bool ?? true } set { UserDefaults.standard.set(newValue, forKey: "agentConfirm") } }
     static let maxSteps = 8
 
-    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean"]
+    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean", "diagnose", "app_check", "logs"]
     static let toolDoc = """
     You are an AGENT on this Mac: you can act, not just talk. To use a tool, output a line in exactly this form (one tool per reply, nothing else on that line):
     [TOOL:name]{"arg": "value"}
     After the tool runs you receive its result and continue. Chain several steps if needed, then give the final answer in plain prose with no tag. Tools:
-    - shell {"cmd": "..."}  run a zsh command (10 s timeout). Use for files, apps, system info, brew, git, etc. Prefer this for most tasks.
+    - shell {"cmd": "...", "timeout": 10}  run a zsh command (default 10 s, up to 90). Use for files, apps, system info, brew, git, etc. Prefer this for most tasks. No sudo (there is no terminal to type a password); say what needs admin rights instead.
     - applescript {"script": "..."}  run AppleScript (control apps, Finder, Music, notifications, system volume: set volume output volume 30). For a reminder or deadline at a time, create a real reminder: tell application "Reminders" to make new reminder with properties {name:"Assignment", remind me date:date "3 November 2026 6:30:00 PM"} (the current date and time are given below). For an event, use Calendar. Do not use display notification for future times; it fires immediately.
     - open {"target": "..."}  open an app by name, a URL, or a file path.
     - read_file {"path": "..."}  read a text file (first 8 KB).
@@ -256,6 +257,10 @@ enum Agent {
     - forget {"note": "keys"} delete remembered notes containing the text.
     - disk_scan {}  measure the drive: free space, every cleanable location in three tiers (SAFE / CAN CLEAN BUT SLOWER AFTERWARDS / NEVER), biggest folders and files. Takes up to a minute. ALWAYS run this before proposing or doing any cleaning.
     - disk_clean {"items": ["trash", "user_caches"]} remove the listed item ids from the scan ({"dry_run": true} to only preview). Only ids from the SAFE and SLOWER tiers are accepted; NEVER-tier items are refused. The app asks the user to confirm.
+    - diagnose {}  3-second health snapshot: load, memory pressure, swap, thermal throttling, top CPU/memory processes, known background hogs (Spotlight, Time Machine, photoanalysis…), disk, crash reports in 24 h, stuck processes, login items, network/DNS, power, pending updates.
+    - app_check {"app": "Name"}  deep check of one app: path/version/architecture vs this Mac, minimum macOS, quarantine, code signature, Gatekeeper verdict, whether it is running, its recent crash reports (exception type), and errors from the unified log.
+    - logs {"process": "Name", "minutes": 10, "filter": "optional text"}  errors and faults from the unified log for a process (or any process if omitted).
+    Troubleshooting: when the user asks why the Mac is slow, hot, laggy, frozen, why an app will not open / crashes / hangs, why Wi-Fi or sound or Bluetooth misbehaves, etc.: run diagnose first (app_check for a named app), then dig with shell/logs as needed, and search the web when the local evidence does not explain it (search the exact error text, or the symptom plus the macOS version and Mac model). Give the cause in plain words, then FIX IT YOURSELF when the fix is safe and reversible: quit or restart a runaway process, relaunch Finder/Dock/SystemUIServer/ControlCenter, restart user services (launchctl kickstart -k gui/$UID/...), remove a quarantine flag (xattr -d com.apple.quarantine), reset an app's caches via disk_clean or its preference file (move it aside, do not delete), toggle Wi-Fi (networksetup), flush DNS (dscacheutil -flushcache; killall -HUP mDNSResponder), reindex Spotlight (mdutil -E). For anything that needs admin rights, a restart, Safe Mode, or reinstalling macOS, tell the user exactly what to do and why.
     Drive cleaning: when asked to clean, free space or explain what is using the disk, run disk_scan first, then summarise in three short groups with sizes: what is safe to clean, what can be cleaned but makes something slower (say what), and what you will not touch (user data). Propose a concrete list of ids, then call disk_clean with it (the user confirms in the app). Never use shell rm for cleaning; disk_clean is the only way.
     Rules: be decisive, act first, then report briefly. Never ask permission in text; the app confirms destructive commands itself. Never fabricate a tool result. Paths may use ~.
     """
@@ -267,15 +272,15 @@ enum Agent {
         return []
     }
     static func run(name: String, args: [String: Any], done: @escaping (String) -> Void) {
-        func sh(_ cmd: String) -> String {
+        func sh(_ cmd: String, timeout: Double = 10) -> String {
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/zsh"); p.arguments = ["-lc", cmd]
             let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
             do { try p.run() } catch { return "failed to launch: \(error.localizedDescription)" }
-            let deadline = DispatchTime.now() + 10
+            let deadline = DispatchTime.now() + timeout
             DispatchQueue.global().asyncAfter(deadline: deadline) { if p.isRunning { p.terminate() } }
             let d = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
             var out = String(data: d, encoding: .utf8) ?? ""
-            if out.count > 6000 { out = String(out.prefix(6000)) + "\n…(truncated)" }
+            if out.count > 8000 { out = String(out.prefix(8000)) + "\n…(truncated)" }
             return out.isEmpty ? "(no output, exit \(p.terminationStatus))" : out
         }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -283,7 +288,7 @@ enum Agent {
         DispatchQueue.global().async {
             var r: String
             switch name {
-            case "shell": r = sh(args["cmd"] as? String ?? "")
+            case "shell": r = sh(args["cmd"] as? String ?? "", timeout: min(90, max(1, (args["timeout"] as? Double) ?? Double(args["timeout"] as? Int ?? 10))))
             case "applescript":
                 let script = args["script"] as? String ?? ""
                 var err: NSDictionary?; let res = NSAppleScript(source: script)?.executeAndReturnError(&err)
@@ -317,6 +322,15 @@ enum Agent {
                 let note = (args["note"] ?? args["text"] ?? args["fact"] ?? args["content"] ?? args.values.first) as? String ?? ""
                 r = note.isEmpty ? "nothing to remember: pass {\"note\": \"...\"}" : Memory.remember(note)
             case "forget": r = Memory.forgetNote(matching: args["note"] as? String ?? "")
+            case "diagnose": r = Doctor.diagnose()
+            case "app_check": r = Doctor.appCheck(args["app"] as? String ?? "")
+            case "logs":
+                let proc = args["process"] as? String ?? "", mins = (args["minutes"] as? Int) ?? Int(args["minutes"] as? Double ?? 10), filt = args["filter"] as? String ?? ""
+                var pred = "(messageType == error OR messageType == fault)"
+                if !proc.isEmpty { pred += " AND (process == \"\(proc)\" OR senderImagePath CONTAINS \"\(proc)\")" }
+                if !filt.isEmpty { pred += " AND eventMessage CONTAINS[c] \"\(filt)\"" }
+                let o = Doctor.sh("log show --last \(max(1, min(mins, 120)))m --style compact --predicate '\(pred)' 2>/dev/null | grep -vE '^Timestamp|^Filtering' | tail -40", timeout: 60)
+                r = o.isEmpty ? "(no errors or faults logged)" : o
             case "disk_scan": r = Cleaner.scan(status: { st in DispatchQueue.main.async { AI.onStatus?(st) } }).text
             case "disk_clean":
                 let ids = Agent.ids(args)
@@ -334,7 +348,7 @@ enum Agent {
         switch name {
         case "shell":
             let c = args["cmd"] as? String ?? ""
-            let risky = ["rm ", "sudo", "mv ", "kill", "pkill", "chmod", "chown", "> ", ">>", "dd ", "mkfs", "diskutil", "launchctl", "defaults write", "git push", "git reset", "osascript", "shutdown", "reboot", "brew install", "brew uninstall", "npm i", "pip install", "curl", "wget"]
+            let risky = ["rm ", "sudo", "mv ", "kill", "pkill", "chmod", "chown", "> ", ">>", "dd ", "mkfs", "diskutil", "launchctl", "defaults write", "git push", "git reset", "osascript", "shutdown", "reboot", "xattr", "networksetup", "mdutil", "defaults delete", "tmutil", "brew install", "brew uninstall", "npm i", "pip install", "curl", "wget"]
             return risky.contains { c.contains($0) } ? "Run command?\n\n\(c)" : nil
         case "applescript": return "Run AppleScript?\n\n\(args["script"] as? String ?? "")"
         case "write_file": return "Write file \(args["path"] as? String ?? "")?"

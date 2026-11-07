@@ -144,6 +144,10 @@ Needs the Xcode command line tools. Edit `SIGN` in `build.sh` to your own signin
 
 The API key is stored in the app's own preferences on your Mac and is sent only to the provider you chose. The search key goes only to the search provider you chose.
 
+## Troubleshooting
+
+Ask JARVIS why the Mac is lagging, hot, frozen, why an app won't open or keeps crashing, why Wi-Fi drops… He takes a one-second health snapshot (load, memory pressure, swap, thermal throttling, runaway processes, Spotlight / Time Machine / photo analysis activity, disk, crash reports, stuck processes, login items, network, power), inspects a named app in depth (architecture vs your Mac, minimum macOS, quarantine, code signature, Gatekeeper verdict, crash reports, unified-log errors), reads the system log, and searches the web for the error when the local evidence isn't enough. Then he explains the cause plainly and fixes it himself when the fix is safe: quitting or restarting a runaway process, relaunching Finder/Dock, restarting user services, removing a quarantine flag, resetting caches or a preference file, flushing DNS, reindexing Spotlight. Fixes that change the system still go through the HUD confirm. Anything needing admin rights or a restart, he tells you how to do.
+
 ## Languages
 
 JARVIS answers in whatever language you use (Chinese gets 先生 and the same dry manner). For the wake word and the 24/7 transcript, pick the languages to listen in under ◎ → Wake Word → Languages. Each language runs its own on-device recognizer on the same microphone stream, with its own wake word: "Jarvis", 「贾维斯」, 「ジャービス」, 「자비스」, «джарвис»… Only the most confident transcript is logged. Languages marked *(server)* are not downloaded for on-device use on your Mac; add them under System Settings → Keyboard → Dictation → Languages to keep everything offline. The default is English plus your system languages that are available on-device.

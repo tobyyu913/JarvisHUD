@@ -1,4 +1,5 @@
 import Cocoa
+import Speech
 import QuartzCore
 
 let CYAN = NSColor(red: 0.2, green: 0.85, blue: 1.0, alpha: 1)
@@ -12,6 +13,7 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - Phrases in character: "At your service, sir." "For you, sir, always." "As you wish." "Might I suggest…" "I've taken the liberty of…" "Shall I…?" "I would advise against it, sir." "Working on it, sir." "Right away, sir."
 - Report facts crisply, like a status readout ("Power at 92 percent. Thermals nominal."). Offer one pertinent recommendation when useful.
 - Keep replies brief: one to three sentences unless asked for detail. Plain text only, no markdown headers or bullet lists.
+- LANGUAGE: always answer in the language the user wrote or spoke in. In Chinese address them as 先生 and keep the same calm, dry butler manner (e.g. 「遵命，先生。」「恕我直言，先生，我不建议这么做。」); in Japanese use ご主人様 or 「〜でございます」 register; in other languages use the equivalent of "sir". Tool calls stay in the exact [TOOL:name]{json} form regardless of language. The speech log may mix languages; read it as is.
 - You have live telemetry about this Mac appended below; use it when asked about the machine's status, fans, temperatures, battery, memory, processes, network, etc.
 - SEARCH_INSTRUCTION
 - You have been LISTENING all day through the microphone (on-device). Everything heard is logged with timestamps for 14 days. If asked what happened today, what someone said, or where something was left, use the recall tool to search the log before answering; the last 30 minutes may already be attached below. Treat the log as possibly garbled speech-to-text.
@@ -663,6 +665,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (t, mode) in [("Automatic (when plugged in)", Voice.Mode.auto), ("Always On", .on), ("Off", .off)] {
             let i = vm.addItem(withTitle: t, action: #selector(setVoice(_:)), keyEquivalent: ""); i.representedObject = mode.rawValue; i.state = Voice.shared.mode == mode ? .on : .off
         }
+        vm.addItem(.separator())
+        let lm = NSMenu(title: "Languages"); let li = NSMenuItem(title: "Languages  (\(Voice.shared.locales.count))", action: nil, keyEquivalent: ""); li.submenu = lm; vm.addItem(li)
+        for l in Voice.languages {
+            let onDevice = SFSpeechRecognizer(locale: Locale(identifier: l.id))?.supportsOnDeviceRecognition == true
+            let i = lm.addItem(withTitle: "\(l.name)   “\(l.wakes[0])”" + (onDevice ? "" : "   (server)"), action: #selector(toggleLanguage(_:)), keyEquivalent: ""); i.representedObject = l.id
+            i.state = Voice.shared.locales.contains(l.id) ? .on : .off
+            if !onDevice { i.toolTip = "Not downloaded for on-device use: audio would go to Apple's servers and is limited per day. To make it on-device, add it under System Settings → Keyboard → Dictation → Languages." }
+        }
         vm.addItem(.separator()); vm.addItem(withTitle: "Forget Today's Transcript", action: #selector(forgetTranscript), keyEquivalent: "")
         vm.addItem(withTitle: "Forget Everything Heard", action: #selector(forgetAllHeard), keyEquivalent: "")
         vm.addItem(withTitle: "Forget Remembered Notes", action: #selector(forgetNotes), keyEquivalent: "")
@@ -686,6 +696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return a.runModal() == .alertFirstButtonReturn ? tf.stringValue : nil
     }
     let providerDialog = ProviderDialog(), searchDialog = SearchDialog()
+    @objc func toggleLanguage(_ i: NSMenuItem) { Voice.shared.toggleLocale(i.representedObject as! String); buildMenu() }
     @objc func setVoice(_ i: NSMenuItem) { Voice.shared.mode = Voice.Mode(rawValue: i.representedObject as! String)! }
     @objc func forgetTranscript() { Memory.forgetToday() }
     @objc func forgetAllHeard() { Memory.forgetAllHeard() }

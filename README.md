@@ -144,6 +144,10 @@ Needs the Xcode command line tools. Edit `SIGN` in `build.sh` to your own signin
 
 The API key is stored in the app's own preferences on your Mac and is sent only to the provider you chose. The search key goes only to the search provider you chose.
 
+## Languages
+
+JARVIS answers in whatever language you use (Chinese gets 先生 and the same dry manner). For the wake word and the 24/7 transcript, pick the languages to listen in under ◎ → Wake Word → Languages. Each language runs its own on-device recognizer on the same microphone stream, with its own wake word: "Jarvis", 「贾维斯」, 「ジャービス」, 「자비스」, «джарвис»… Only the most confident transcript is logged. Languages marked *(server)* are not downloaded for on-device use on your Mac; add them under System Settings → Keyboard → Dictation → Languages to keep everything offline. The default is English plus your system languages that are available on-device.
+
 ## Disk clean-up
 
 Say "clean up my drive" (or use ◎ → Clean Up Disk…). JARVIS scans first (about 20 s) and explains the drive in three groups with sizes:

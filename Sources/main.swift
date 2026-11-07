@@ -16,6 +16,7 @@ You are J.A.R.V.I.S., Tony Stark's AI from the Iron Man films, now running on th
 - SEARCH_INSTRUCTION
 - You have been LISTENING all day through the microphone (on-device). Everything heard is logged with timestamps for 14 days. If asked what happened today, what someone said, or where something was left, use the recall tool to search the log before answering; the last 30 minutes may already be attached below. Treat the log as possibly garbled speech-to-text.
 - When the user asks you to remember something (where they left the keys, a fact, a reminder), use the remember tool. Your remembered notes are listed below under "Remembered notes"; use them to answer.
+- Disk clean-up: scan first (disk_scan), explain the drive in three groups (safe / slower afterwards / never), then act only through disk_clean. The user is asked to confirm in the app, so do not ask for permission in text.
 - Fans: use the fans tool. "max" = the fan's max rpm, "quiet" = minimum, "cool it down" = ~70% of max.
 TOOL_DOC
 """
@@ -234,7 +235,7 @@ enum Agent {
     static var confirmActions: Bool { get { UserDefaults.standard.object(forKey: "agentConfirm") as? Bool ?? true } set { UserDefaults.standard.set(newValue, forKey: "agentConfirm") } }
     static let maxSteps = 8
 
-    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget"]
+    static let toolNames = ["shell", "applescript", "open", "read_file", "write_file", "search", "telemetry", "fans", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean"]
     static let toolDoc = """
     You are an AGENT on this Mac: you can act, not just talk. To use a tool, output a line in exactly this form (one tool per reply, nothing else on that line):
     [TOOL:name]{"arg": "value"}
@@ -251,9 +252,18 @@ enum Agent {
     - recall {"query": "keys"} search everything heard (last 14 days) for words; {"hours": 8} returns everything heard in the last N hours instead.
     - remember {"note": "keys are in the kitchen drawer"} store a note permanently.
     - forget {"note": "keys"} delete remembered notes containing the text.
+    - disk_scan {}  measure the drive: free space, every cleanable location in three tiers (SAFE / CAN CLEAN BUT SLOWER AFTERWARDS / NEVER), biggest folders and files. Takes up to a minute. ALWAYS run this before proposing or doing any cleaning.
+    - disk_clean {"items": ["trash", "user_caches"]} remove the listed item ids from the scan ({"dry_run": true} to only preview). Only ids from the SAFE and SLOWER tiers are accepted; NEVER-tier items are refused. The app asks the user to confirm.
+    Drive cleaning: when asked to clean, free space or explain what is using the disk, run disk_scan first, then summarise in three short groups with sizes: what is safe to clean, what can be cleaned but makes something slower (say what), and what you will not touch (user data). Propose a concrete list of ids, then call disk_clean with it (the user confirms in the app). Never use shell rm for cleaning; disk_clean is the only way.
     Rules: be decisive, act first, then report briefly. Never ask permission in text; the app confirms destructive commands itself. Never fabricate a tool result. Paths may use ~.
     """
 
+    static func ids(_ args: [String: Any]) -> [String] {
+        if let a = args["items"] as? [String] { return a }
+        if let a = args["items"] as? [Any] { return a.compactMap { "\($0)" } }
+        if let s = args["items"] as? String { return s.split(whereSeparator: { ", ".contains($0) }).map(String.init) }
+        return []
+    }
     static func run(name: String, args: [String: Any], done: @escaping (String) -> Void) {
         func sh(_ cmd: String) -> String {
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/zsh"); p.arguments = ["-lc", cmd]
@@ -305,6 +315,12 @@ enum Agent {
                 let note = (args["note"] ?? args["text"] ?? args["fact"] ?? args["content"] ?? args.values.first) as? String ?? ""
                 r = note.isEmpty ? "nothing to remember: pass {\"note\": \"...\"}" : Memory.remember(note)
             case "forget": r = Memory.forgetNote(matching: args["note"] as? String ?? "")
+            case "disk_scan": r = Cleaner.scan(status: { st in DispatchQueue.main.async { AI.onStatus?(st) } }).text
+            case "disk_clean":
+                let ids = Agent.ids(args)
+                if ids.isEmpty { r = "disk_clean needs {\"items\": [ids from disk_scan]}" }
+                else if Cleaner.last == nil && args["dry_run"] as? Bool != true { r = "Run disk_scan first so the sizes are known, then call disk_clean again." }
+                else { r = Cleaner.clean(ids: ids, dryRun: args["dry_run"] as? Bool == true) }
             default: r = "unknown tool \(name). Available: \(Agent.toolNames.joined(separator: ", ")). Use exactly [TOOL:name]{json} and nothing else on that line."
             }
             DispatchQueue.main.async { done(r) }
@@ -320,6 +336,9 @@ enum Agent {
             return risky.contains { c.contains($0) } ? "Run command?\n\n\(c)" : nil
         case "applescript": return "Run AppleScript?\n\n\(args["script"] as? String ?? "")"
         case "write_file": return "Write file \(args["path"] as? String ?? "")?"
+        case "disk_clean":
+            if args["dry_run"] as? Bool == true { return nil }
+            return Cleaner.describe(ids: Agent.ids(args)) ?? "Nothing cleanable in that request. Continue?"
         default: return nil
         }
     }
@@ -648,6 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.addItem(withTitle: "Forget Everything Heard", action: #selector(forgetAllHeard), keyEquivalent: "")
         vm.addItem(withTitle: "Forget Remembered Notes", action: #selector(forgetNotes), keyEquivalent: "")
         vm.addItem(withTitle: "Show Memory Folder", action: #selector(showMemory), keyEquivalent: "")
+        m.addItem(withTitle: "Clean Up Disk…", action: #selector(cleanDisk), keyEquivalent: "")
         let c = m.addItem(withTitle: "Ask Before Risky Actions", action: #selector(toggleConfirm), keyEquivalent: ""); c.state = Agent.confirmActions ? .on : .off
         m.addItem(withTitle: "Web Search…  (\(Search.provider))", action: #selector(setSearch), keyEquivalent: "")
         m.addItem(withTitle: "AI Provider…  (\(AI.providerName) · \(AI.model))", action: #selector(setProvider), keyEquivalent: "")
@@ -670,6 +690,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func forgetTranscript() { Memory.forgetToday() }
     @objc func forgetAllHeard() { Memory.forgetAllHeard() }
     @objc func forgetNotes() { Memory.forgetAllNotes() }
+    @objc func cleanDisk() {
+        if !active { showHUD() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.panel?.hud.submit("Scan my disk: tell me what is using it, what is safe to clean, what can be cleaned but would make something slower, and what you will not touch. Then propose a clean-up.") }
+    }
     @objc func showMemory() { NSWorkspace.shared.open(Memory.dir) }
     @objc func toggleConfirm() { Agent.confirmActions.toggle(); buildMenu() }
     @objc func setSearch() { searchDialog.run(); buildMenu() }

@@ -144,6 +144,16 @@ Needs the Xcode command line tools. Edit `SIGN` in `build.sh` to your own signin
 
 The API key is stored in the app's own preferences on your Mac and is sent only to the provider you chose. The search key goes only to the search provider you chose.
 
+## Disk clean-up
+
+Say "clean up my drive" (or use ◎ → Clean Up Disk…). JARVIS scans first (about 20 s) and explains the drive in three groups with sizes:
+
+- **Safe to clean**: Trash, logs, crash reports, Mail attachment previews, installers in Downloads older than 30 days (those go to the Trash, not straight to deletion).
+- **Can clean, but something gets slower afterwards**: app and browser caches, Xcode DerivedData and device support, simulator caches, Homebrew / npm / pip / Gradle / Cargo / Go caches, Docker leftovers, Spotify cache, Quick Look thumbnails. Each item says what rebuilds.
+- **Never cleaned**: Documents, Desktop, Pictures, Music, Movies, iCloud Drive, Mail, Messages, device backups, Application Support, Applications, the system. Shown only so you understand where the space went.
+
+Cleaning goes through a single tool that only accepts items from the first two groups, refuses the third, and always asks you to confirm in the HUD (Return / Esc) with the total it will free.
+
 ## Android version
 
 The same JARVIS for your phone, in [`android/`](android/). It registers as the phone's **default digital assistant**, the same hook 小爱同学 (XiaoAI) or Google Assistant use, so long-press home / the power-button gesture summons the cyan ring and panel instead.

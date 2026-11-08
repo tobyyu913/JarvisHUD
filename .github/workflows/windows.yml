@@ -1,0 +1,36 @@
+name: Windows build
+on:
+  push:
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the zips to this existing GitHub release (e.g. v1.8.0); leave empty to only upload artifacts"
+        required: false
+        default: ""
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Publish x64 and arm64
+        shell: pwsh
+        run: |
+          cd windows
+          ./build.ps1 -Arch x64
+          ./build.ps1 -Arch arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JarvisHUD-windows
+          path: windows/dist/*.zip
+      - name: Attach to release
+        if: github.event.inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.inputs.release_tag }}" windows/dist/JarvisHUD-win-x64.zip windows/dist/JarvisHUD-win-arm64.zip --clobber

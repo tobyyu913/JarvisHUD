@@ -166,6 +166,12 @@ Say "clean up my drive" (or use ◎ → Clean Up Disk…). JARVIS scans first (a
 
 Cleaning goes through a single tool that only accepts items from the first two groups, refuses the third, and always asks you to confirm in the HUD (Return / Esc) with the total it will free.
 
+## Windows version
+
+The same JARVIS as a tray app for Windows 10/11, in [`windows/`](windows/). **Alt+Space** opens him (Win+J if Alt+Space is taken), Ctrl+Alt+Space shows the telemetry overlay. Same providers (Groq, Gemini, OpenAI, Anthropic, Aliyun 百炼, OpenRouter, Ollama…), same memory, same tools translated to Windows: PowerShell instead of zsh/AppleScript, winget + Microsoft Store + GitHub for app shopping with Authenticode + Microsoft Defender + VirusTotal vetting, Event Log / startup apps / disk health for troubleshooting, a Windows three-tier disk clean-up, a malware sweep with quarantine, automatic vetting of new downloads, and the wake word through Windows' offline speech recognition (any language whose speech pack is installed).
+
+**Install:** download `JarvisHUD-win-x64.zip` (or `-arm64`) from Releases, unzip, run `JarvisHUD.exe` (SmartScreen: *More info → Run anyway*, the exe is unsigned), then right-click the ◎ tray icon → AI Provider…. Details in [windows/README.md](windows/README.md).
+
 ## Android version
 
 The same JARVIS for your phone, in [`android/`](android/). It registers as the phone's **default digital assistant**, the same hook 小爱同学 (XiaoAI) or Google Assistant use, so long-press home / the power-button gesture summons the cyan ring and panel instead.

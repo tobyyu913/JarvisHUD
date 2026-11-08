@@ -120,7 +120,7 @@ static class AI {
                 url = b + "/chat/completions"; headers["Authorization"] = "Bearer " + ApiKey;
                 var msgs = new List<object> { new { role = "system", content = system } };
                 msgs.AddRange(history.Select(h => new { role = h.role, content = h.text }));
-                body = new { model = Model, messages = msgs, max_tokens = 1024 };
+                body = local ? new { model = Model, messages = msgs, max_tokens = 1024, reasoning_effort = "none" } : new { model = Model, messages = msgs, max_tokens = 1024 };
                 break;
         }
         Log.V($"ai → {ProviderName}/{Model}: {prompt[..Math.Min(120, prompt.Length)]}");

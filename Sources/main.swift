@@ -151,6 +151,7 @@ enum AI {
             req = URLRequest(url: URL(string: b + "/chat/completions")!)
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             body = ["model": model, "messages": [["role": "system", "content": system]] + history.map { ["role": $0.role, "content": $0.text] }, "max_tokens": 1024]
+            if localhost { body["reasoning_effort"] = "none" }   // Ollama/LM Studio: stop Qwen 3 & co. spending the whole budget on hidden thinking
         case .anthropic:
             req = URLRequest(url: URL(string: b + "/messages")!)
             req.setValue(apiKey, forHTTPHeaderField: "x-api-key"); req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")

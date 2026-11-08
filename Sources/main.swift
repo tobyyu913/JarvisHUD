@@ -98,9 +98,25 @@ enum AI {
     /// Ask the user to allow a risky tool call. Non-blocking; set by the HUD. Falls back to an alert.
     static var onConfirm: ((String, @escaping (Bool) -> Void) -> Void)?
     static var onStep: ((String) -> Void)?
-    static func ask(_ prompt: String, done: @escaping (String) -> Void) { step(prompt, n: 0, done: done) }
+    /// No time limit: a reply (or a long chain of tool steps) runs until it finishes or the user presses Esc.
+    static var generation = 0
+    static var currentTask: URLSessionDataTask?
+    static var currentDone: ((String) -> Void)?
+    static var busy: Bool { currentDone != nil }
+    static func stop() {
+        guard let d = currentDone else { return }
+        generation += 1; currentTask?.cancel(); currentTask = nil; currentDone = nil
+        history.append(("assistant", "(reply interrupted by the user)"))
+        vlog("ai stopped by user"); d("Stopped, sir.")
+    }
+    static func ask(_ prompt: String, done: @escaping (String) -> Void) {
+        currentDone = done
+        step(prompt, n: 0) { r in currentDone = nil; done(r) }
+    }
     private static func step(_ prompt: String, n: Int, done: @escaping (String) -> Void) {
+        let gen = generation
         request(prompt) { r in
+            guard gen == generation else { return }   // stopped meanwhile
             guard n < Agent.maxSteps, let (name, args, range) = Agent.parse(r) else {
                 var final = r.replacingOccurrences(of: #"\[TOOL:[^\]]+\]\s*\{[^\n]*\}?"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
                 // Never leave the HUD with a blank line: a reply that was *only* a malformed/unknown tool call would strip to nothing.
@@ -115,6 +131,7 @@ enum AI {
             onStatus?(name.uppercased())
             let go = {
                 Agent.run(name: name, args: args) { result in
+                    guard gen == generation else { return }
                     onStatus?("THINKING")
                     step("Tool result (\(name)):\n\(result)", n: n + 1, done: done)
                 }
@@ -163,9 +180,10 @@ enum AI {
         }
         req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        req.timeoutInterval = 60
+        req.timeoutInterval = 24 * 3600   // no practical time-out; Esc in the HUD cancels
         vlog("ai → \(providerName)/\(model): \(prompt.prefix(120))")
-        URLSession.shared.dataTask(with: req) { data, _, err in
+        let task = URLSession.shared.dataTask(with: req) { data, _, err in
+            if (err as? URLError)?.code == .cancelled { return }
             var text = "Error: \(err?.localizedDescription ?? "no response")"
             if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
                 if let t = parse(j) { text = t.trimmingCharacters(in: .whitespacesAndNewlines); history.append(("assistant", text)) }
@@ -174,8 +192,9 @@ enum AI {
                 else { text = "Error: unexpected response from \(providerName)" }
             }
             vlog("ai ← \(text.prefix(300))")
-            DispatchQueue.main.async { done(text) }
-        }.resume()
+            DispatchQueue.main.async { currentTask = nil; done(text) }
+        }
+        currentTask = task; task.resume()
     }
     static func parse(_ j: [String: Any]) -> String? {
         switch kind {
@@ -615,14 +634,19 @@ final class HUDView: NSView, NSTextFieldDelegate {
             if sel == #selector(NSResponder.cancelOperation(_:)) { resolveConfirm(false); return true }
             if sel == #selector(NSResponder.insertNewline(_:)) { resolveConfirm(true); return true }
         }
-        if sel == #selector(NSResponder.cancelOperation(_:)) { onClose?(); return true }
+        if sel == #selector(NSResponder.cancelOperation(_:)) {
+            if AI.busy { AI.stop(); return true }   // first Esc stops the reply, second closes the HUD
+            onClose?(); return true
+        }
         if sel == #selector(NSResponder.insertNewline(_:)) { submit(input.stringValue); return true }
         return false
     }
 
     func submit(_ text: String, spoken: Bool = false) {
             let q = text.trimmingCharacters(in: .whitespaces); guard !q.isEmpty else { return }
+            guard !AI.busy else { return }
             input.stringValue = ""; append(spoken ? "YOU 🎙 ▸" : "YOU ▸", q); append("JARVIS ▸", "…")
+            input.placeholderString = "Esc to stop"
             AI.spoken = spoken
             title.string = "J.A.R.V.I.S.  — THINKING"
             AI.onStatus = { [weak self] st in self?.title.string = "J.A.R.V.I.S.  — \(st)" }
@@ -637,7 +661,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
                 self.output.scrollToEndOfDocument(nil)
             }
             AI.ask(q) { r in
-                self.title.string = "J.A.R.V.I.S."
+                self.title.string = "J.A.R.V.I.S."; self.input.placeholderString = "Ask anything…"
                 if let s = self.output.string.range(of: "…\n\n", options: .backwards) {
                     self.output.textStorage?.replaceCharacters(in: NSRange(s, in: self.output.string), with: NSAttributedString(string: r + "\n\n", attributes: [.foregroundColor: HUDView.bodyColor, .font: HUDView.bodyFont]))
                     self.output.scrollToEndOfDocument(nil)

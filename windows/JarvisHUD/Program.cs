@@ -189,7 +189,7 @@ sealed class HudWindow : Window {
         // restore the tail of the conversation
         var h = AI.History; if (h.Count > 0) { foreach (var t in h.Skip(Math.Max(0, h.Count - 8))) output.AppendText((t.role == "user" ? "> " : "") + t.text + "\n\n"); output.AppendText("— earlier conversation, still remembered —\n\n"); }
         Deactivated += (_, _) => { if (pendingConfirm == null && !Busy) HideHud(); };
-        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) { if (pendingConfirm != null) Resolve(false); else HideHud(); e.Handled = true; } };
+        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) { if (pendingConfirm != null) Resolve(false); else if (AI.Busy) AI.Stop(); else HideHud(); e.Handled = true; } };   // first Esc stops the reply, second closes
     }
     void Ring(double r, double w, Brush b, DoubleCollection? dash, double frac, double secondsPerTurn) {
         var e = new Ellipse { Width = r * 2, Height = r * 2, Stroke = b, StrokeThickness = w, StrokeDashArray = dash, Margin = new Thickness(R - r), RenderTransformOrigin = new Point(0.5, 0.5), StrokeDashCap = PenLineCap.Round };
@@ -212,7 +212,7 @@ sealed class HudWindow : Window {
     }
     public async void Ask(string q, bool quiet = false) {
         if (Busy) { AppendLine("(one moment, sir — still working)"); return; }
-        Busy = true; if (!quiet) AppendLine("> " + q); SetStatus("THINKING"); input.IsEnabled = false;
+        Busy = true; if (!quiet) AppendLine("> " + q); SetStatus("THINKING  (Esc to stop)"); input.IsEnabled = false;
         try { var r = await AI.Ask(q); AppendLine(r); }
         catch (Exception ex) { AppendLine("Error: " + ex.Message); }
         finally { Busy = false; AI.Spoken = false; SetStatus(Voice.Shared.Running ? "LISTENING" : "READY"); input.IsEnabled = true; if (IsVisible) { input.Focus(); Keyboard.Focus(input); } }

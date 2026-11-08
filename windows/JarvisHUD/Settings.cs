@@ -36,7 +36,7 @@ static class Log {
 /// Small helpers shared by every tool: run PowerShell, run a program, HTTP.
 static class Sys {
     public static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    public static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = System.Net.DecompressionMethods.All }) { Timeout = TimeSpan.FromSeconds(60) };
+    public static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = System.Net.DecompressionMethods.All }) { Timeout = Timeout.InfiniteTimeSpan };
     static Sys() { Http.DefaultRequestHeaders.UserAgent.ParseAdd("JarvisHUD/1.8 (Windows)"); }
 
     /// Run a PowerShell snippet, capture stdout+stderr, kill after timeout seconds.
@@ -75,11 +75,13 @@ static class Sys {
         using var r = await Http.SendAsync(req, cts.Token);
         return await r.Content.ReadAsStringAsync(cts.Token);
     }
-    public static async Task<(int status, string body)> PostJsonAsync(string url, object body, Dictionary<string, string>? headers = null, double timeout = 60) {
+    /// timeout 0 = none (the caller's token is the only way to stop it).
+    public static async Task<(int status, string body)> PostJsonAsync(string url, object body, Dictionary<string, string>? headers = null, double timeout = 60, CancellationToken ct = default) {
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json") };
         if (headers != null) foreach (var h in headers) req.Headers.TryAddWithoutValidation(h.Key, h.Value);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeout));
-        using var r = await Http.SendAsync(req, cts.Token);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (timeout > 0) cts.CancelAfter(TimeSpan.FromSeconds(timeout));
+        using var r = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
         return ((int)r.StatusCode, await r.Content.ReadAsStringAsync(cts.Token));
     }
     public static JsonNode? J(string s) { try { return JsonNode.Parse(s); } catch { return null; } }

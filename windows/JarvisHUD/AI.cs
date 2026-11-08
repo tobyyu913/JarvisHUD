@@ -63,9 +63,19 @@ static class AI {
     public static Action<string>? OnStep;
     public static Func<string, Task<bool>>? OnConfirm;
 
-    public static Task<string> Ask(string prompt) => Step(prompt, 0);
-    static async Task<string> Step(string prompt, int n) {
-        var r = await Request(prompt);
+    // No time limit: a reply runs until it finishes or the user presses Esc (Stop()).
+    static CancellationTokenSource? cts;
+    public static bool Busy => cts != null;
+    public static void Stop() { var c = cts; if (c == null) return; cts = null; c.Cancel(); Push("assistant", "(reply interrupted by the user)"); Log.V("ai stopped by user"); }
+    public static async Task<string> Ask(string prompt) {
+        var c = cts = new CancellationTokenSource();
+        try { return await Step(prompt, 0, c.Token); }
+        catch (OperationCanceledException) { return "Stopped, sir."; }
+        finally { if (cts == c) cts = null; }
+    }
+    static async Task<string> Step(string prompt, int n, CancellationToken ct) {
+        var r = await Request(prompt, ct);
+        ct.ThrowIfCancellationRequested();
         var call = Agent.Parse(r);
         if (n >= Agent.MaxSteps || call == null) {
             var final = Regex.Replace(r, @"\[TOOL:[^\]]+\]\s*\{[^\n]*\}?", "").Trim();
@@ -81,14 +91,15 @@ static class AI {
         OnStatus?.Invoke(name.ToUpperInvariant());
         if (Agent.NeedsConfirm(name, args) && Agent.ConfirmActions) {
             var ok = OnConfirm != null && await OnConfirm(Agent.Describe(name, args));
-            if (!ok) { OnStatus?.Invoke("THINKING"); return await Step($"Tool result ({name}):\nThe user DECLINED this action. Do not retry it; acknowledge briefly.", n + 1); }
+            if (!ok) { OnStatus?.Invoke("THINKING"); return await Step($"Tool result ({name}):\nThe user DECLINED this action. Do not retry it; acknowledge briefly.", n + 1, ct); }
         }
-        var result = await Task.Run(() => Agent.Run(name, args));
+        var result = await Task.Run(() => Agent.Run(name, args), CancellationToken.None);
+        ct.ThrowIfCancellationRequested();
         OnStatus?.Invoke("THINKING");
-        return await Step($"Tool result ({name}):\n{result}", n + 1);
+        return await Step($"Tool result ({name}):\n{result}", n + 1, ct);
     }
 
-    static async Task<string> Request(string prompt) {
+    static async Task<string> Request(string prompt, CancellationToken ct) {
         bool local = Base.Contains("localhost") || Base.Contains("127.0.0.1");
         if (ApiKey.Length == 0 && !local) return "No API key, sir. Right-click the tray icon → AI Provider…";
         Push("user", prompt);
@@ -126,14 +137,15 @@ static class AI {
         Log.V($"ai → {ProviderName}/{Model}: {prompt[..Math.Min(120, prompt.Length)]}");
         string text;
         try {
-            var (status, resp) = await Sys.PostJsonAsync(url, body, headers, 90);
+            var (status, resp) = await Sys.PostJsonAsync(url, body, headers, 0, ct);
             var j = Sys.J(resp);
             var t = ParseReply(j);
             if (t != null) { text = t.Trim(); Push("assistant", text); }
             else if (j?["error"] is JsonObject eo) text = "Error: " + Sys.S(eo, "message", eo.ToJsonString());
             else if (j?["error"] is JsonValue ev) text = "Error: " + ev.ToString();
             else text = $"Error: unexpected response from {ProviderName} (HTTP {status})";
-        } catch (Exception e) { text = "Error: " + e.Message; }
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception e) { text = "Error: " + e.Message; }
         Log.V($"ai ← {text[..Math.Min(300, text.Length)]}");
         return text;
     }

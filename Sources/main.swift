@@ -487,6 +487,8 @@ final class HUDView: NSView, NSTextFieldDelegate {
     static let bodyColor = NSColor(red: 0.7, green: 0.93, blue: 1, alpha: 1)
     let scroll = NSScrollView()
     var onClose: (() -> Void)?
+    var onReopen: (() -> Void)?            // a background reply needs the user (confirmation)
+    var onBackgroundReply: (() -> Void)?   // a reply finished while the HUD was hidden
     var closing = false
 
     override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true; build() }
@@ -561,6 +563,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
     }
 
     func show() {
+        closing = false
         CATransaction.begin(); CATransaction.setDisableActions(true)
         ringGroup.transform = CATransform3DMakeScale(0.3, 0.3, 1); ringGroup.opacity = 0
         panel.bounds.size.width = 0
@@ -591,8 +594,8 @@ final class HUDView: NSView, NSTextFieldDelegate {
         }
     }
 
+    /// Hiding never interrupts JARVIS: a running reply (and any pending confirmation) keeps going in the background.
     func hide(_ done: @escaping () -> Void) {
-        resolveConfirm(false)
         closing = true
         input.alphaValue = 0; scroll.alphaValue = 0
         CATransaction.begin(); CATransaction.setAnimationDuration(0.25)
@@ -635,7 +638,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
             if sel == #selector(NSResponder.insertNewline(_:)) { resolveConfirm(true); return true }
         }
         if sel == #selector(NSResponder.cancelOperation(_:)) {
-            if AI.busy { AI.stop(); return true }   // first Esc stops the reply, second closes the HUD
+            if AI.busy { AI.stop(); return true }   // first Esc stops the reply, second closes the HUD (the hotkey hides without stopping)
             onClose?(); return true
         }
         if sel == #selector(NSResponder.insertNewline(_:)) { submit(input.stringValue); return true }
@@ -651,7 +654,8 @@ final class HUDView: NSView, NSTextFieldDelegate {
             title.string = "J.A.R.V.I.S.  — THINKING"
             AI.onStatus = { [weak self] st in self?.title.string = "J.A.R.V.I.S.  — \(st)" }
             AI.onConfirm = { [weak self] q, decide in
-                guard let self = self, self.window?.isVisible == true else { decide(false); return }
+                guard let self = self else { decide(false); return }
+                if self.window?.isVisible != true { self.onReopen?() }   // bring the HUD back so the question can be answered
                 self.askConfirm(q, decide)
             }
             AI.onStep = { [weak self] st in
@@ -662,6 +666,7 @@ final class HUDView: NSView, NSTextFieldDelegate {
             }
             AI.ask(q) { r in
                 self.title.string = "J.A.R.V.I.S."; self.input.placeholderString = "Ask anything…"
+                if self.window?.isVisible != true { self.onBackgroundReply?() }
                 if let s = self.output.string.range(of: "…\n\n", options: .backwards) {
                     self.output.textStorage?.replaceCharacters(in: NSRange(s, in: self.output.string), with: NSAttributedString(string: r + "\n\n", attributes: [.foregroundColor: HUDView.bodyColor, .font: HUDView.bodyFont]))
                     self.output.scrollToEndOfDocument(nil)
@@ -682,6 +687,10 @@ final class HUDPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isFloatingPanel = true; hidesOnDeactivate = false
         contentView = hud
+    }
+    func place(on screen: NSScreen) {
+        let f = screen.visibleFrame
+        setFrameOrigin(NSPoint(x: f.maxX - 720, y: f.maxY - 320))
     }
     override var canBecomeKey: Bool { true }
     override func performKeyEquivalent(with e: NSEvent) -> Bool {
@@ -853,7 +862,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func fanSet(_ i: NSMenuItem) { notify(FanControl.set(Double(i.tag))) }
     @objc func fanMax() { notify(FanControl.set(SMC.shared.fanRange(0).1)) }
     @objc func fanInstall() { FanControl.install(); buildMenu() }
-    func notify(_ s: String) { statusItem.button?.title = "◎ " + s; DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.statusItem.button?.title = "◎" } }
+    func notify(_ s: String, seconds: Double = 4) { statusItem.button?.title = "◎ " + s; DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { self.refreshIcon() } }
     func applicationWillTerminate(_ n: Notification) { if Stats.shared.snap.fanManual { FanControl.set(nil) } }
 
     private var overlayClosing = false
@@ -877,27 +886,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// One HUD for the life of the app: hiding it just orders the window out, so a reply that is still
+    /// running keeps its output and lands in the same transcript when the HUD comes back.
     func showHUD() {
         guard let screen = NSScreen.main else { return }
-        if let old = panel { old.orderOut(nil) }   // defensive: never leave an orphan behind
         active = true
-        let p = HUDPanel(screen: screen); panel = p
-        // show the tail of the remembered conversation so the context is visible after a restart
-        let prior = AI.history.suffix(8)
-        if !prior.isEmpty, p.hud.output.string.isEmpty {
-            for m in prior { p.hud.append(m.role == "user" ? "YOU ▸" : "JARVIS ▸", String(m.text.prefix(600))) }
-            p.hud.append("", "— earlier conversation, still remembered —")
+        let p: HUDPanel
+        if let existing = panel { p = existing; p.place(on: screen) }
+        else {
+            p = HUDPanel(screen: screen); panel = p
+            // show the tail of the remembered conversation so the context is visible after a restart
+            let prior = AI.history.suffix(8)
+            if !prior.isEmpty {
+                for m in prior { p.hud.append(m.role == "user" ? "YOU ▸" : "JARVIS ▸", String(m.text.prefix(600))) }
+                p.hud.append("", "— earlier conversation, still remembered —")
+            }
+            p.hud.onClose = { [weak self] in self?.hideHUD() }
+            p.hud.onReopen = { [weak self] in if self?.active == false { self?.showHUD() } }
+            p.hud.onBackgroundReply = { [weak self] in self?.notify("JARVIS replied", seconds: 10) }
         }
-        p.hud.onClose = { [weak self] in self?.hideHUD() }
+        statusItem.button?.title = Voice.shared.listening ? "◎ 🎙" : "◎"
         p.makeKeyAndOrderFront(nil)
         p.hud.show()
     }
     func hideHUD() {
         guard active, let p = panel else { return }
-        // Clear state immediately so a second toggle during the close animation starts a fresh panel
-        // instead of racing this one's completion handler.
-        active = false; panel = nil
-        p.hud.hide { p.orderOut(nil) }
+        active = false
+        p.hud.hide { [weak self] in if self?.active == false { p.orderOut(nil) } }   // re-opened mid-fade: leave it up
     }
 }
 

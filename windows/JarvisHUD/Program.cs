@@ -24,6 +24,7 @@ sealed class App : Application {
     public static readonly Brush CyanBrush = new SolidColorBrush(Cyan);
     public static readonly Brush DimBrush = new SolidColorBrush(Color.FromArgb(90, 51, 217, 255));
     WF.NotifyIcon tray = null!;
+    public static WF.NotifyIcon? Tray;
     HudWindow? hud; OverlayWindow? overlay;
     HotkeyWindow hot = null!;
 
@@ -32,7 +33,7 @@ sealed class App : Application {
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         Memory.Prune();
         Log.V("launch " + Doctor.OsVersion);
-        tray = new WF.NotifyIcon { Icon = LoadIcon(), Visible = true, Text = "JARVIS — Alt+Space" };
+        tray = new WF.NotifyIcon { Icon = LoadIcon(), Visible = true, Text = "JARVIS — Alt+Space" }; Tray = tray;
         tray.MouseClick += (_, ev) => { if (ev.Button == WF.MouseButtons.Left) ToggleHud(); };
         BuildMenu();
         hot = new HotkeyWindow(); hot.OnToggleHud = ToggleHud; hot.OnToggleOverlay = ToggleOverlay;
@@ -199,7 +200,7 @@ sealed class HudWindow : Window {
         ringCanvas.Children.Add(e);
     }
     public new void Show() { base.Show(); Activate(); input.Focus(); Keyboard.Focus(input); }
-    public void HideHud() { if (pendingConfirm != null) Resolve(false); Hide(); }
+    public void HideHud() { Hide(); }   // hiding never interrupts a running reply or a pending confirmation; the HUD comes back when it needs you
     public void SetStatus(string s) { status.Text = s; }
     public void ClearOutput() { output.Clear(); }
     public void AppendLine(string s) { output.AppendText(s + "\n\n"); output.ScrollToEnd(); }
@@ -213,7 +214,7 @@ sealed class HudWindow : Window {
     public async void Ask(string q, bool quiet = false) {
         if (Busy) { AppendLine("(one moment, sir — still working)"); return; }
         Busy = true; if (!quiet) AppendLine("> " + q); SetStatus("THINKING  (Esc to stop)"); input.IsEnabled = false;
-        try { var r = await AI.Ask(q); AppendLine(r); }
+        try { var r = await AI.Ask(q); AppendLine(r); if (!IsVisible) App.Tray?.ShowBalloonTip(5000, "JARVIS", r.Length > 200 ? r[..200] + "…" : r, WF.ToolTipIcon.None); }
         catch (Exception ex) { AppendLine("Error: " + ex.Message); }
         finally { Busy = false; AI.Spoken = false; SetStatus(Voice.Shared.Running ? "LISTENING" : "READY"); input.IsEnabled = true; if (IsVisible) { input.Focus(); Keyboard.Focus(input); } }
     }

@@ -100,7 +100,7 @@ static class AI {
     }
 
     static async Task<string> Request(string prompt, CancellationToken ct) {
-        bool local = Base.Contains("localhost") || Base.Contains("127.0.0.1");
+        bool local = IsLocalServer;
         if (ApiKey.Length == 0 && !local) return "No API key, sir. Right-click the tray icon → AI Provider…";
         Push("user", prompt);
         var searchRule = Search.Enabled
@@ -151,6 +151,9 @@ static class AI {
         Log.V($"ai ← {text[..Math.Min(300, text.Length)]}");
         return text;
     }
+    /// Ollama / LM Studio / any self-hosted server: by name, by loopback or LAN address, or by their default ports.
+    public static bool IsLocalServer => ProviderName.Contains("ollama", StringComparison.OrdinalIgnoreCase) || ProviderName.Contains("lm studio", StringComparison.OrdinalIgnoreCase)
+        || System.Text.RegularExpressions.Regex.IsMatch(Base.ToLowerInvariant(), @"localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|\b10\.\d+\.|172\.(1[6-9]|2\d|3[01])\.|\.local\b|:11434|:1234\b");
     static string? ParseReply(JsonNode? j) {
         try {
             switch (CurrentKind) {

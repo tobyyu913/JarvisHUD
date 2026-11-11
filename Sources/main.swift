@@ -147,8 +147,15 @@ enum AI {
             decide(a.runModal() == .alertFirstButtonReturn)
         }
     }
+    /// Ollama / LM Studio / any self-hosted server: by name, by loopback or LAN address, or by their default ports.
+    static var forceTools = false
+    static var isLocalServer: Bool {
+        let b = base.lowercased()
+        return providerName.lowercased().contains("ollama") || providerName.lowercased().contains("lm studio")
+            || b.range(of: #"localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|\b10\.\d+\.|172\.(1[6-9]|2\d|3[01])\.|\.local\b|:11434|:1234\b"#, options: .regularExpression) != nil
+    }
     static func request(_ prompt: String, done: @escaping (String) -> Void) {
-        let localhost = base.contains("localhost") || base.contains("127.0.0.1")
+        let localhost = isLocalServer
         guard !apiKey.isEmpty || localhost else { done("No API key, sir. Use the menu bar ◎ → AI Provider…"); return }
         history.append(("user", prompt))
         let searchRule = Search.enabled
@@ -168,8 +175,8 @@ enum AI {
             req = URLRequest(url: URL(string: b + "/chat/completions")!)
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             body = ["model": model, "messages": [["role": "system", "content": system]] + history.map { ["role": $0.role, "content": $0.text] }, "max_tokens": 1024]
-            if localhost {
-                body["reasoning_effort"] = "none"   // Ollama/LM Studio: stop Qwen 3 & co. spending the whole budget on hidden thinking
+            if localhost || forceTools {
+                if localhost { body["reasoning_effort"] = "none" }   // Ollama/LM Studio: stop Qwen 3 & co. spending the whole budget on hidden thinking
                 // Qwen 3.x and friends sometimes emit their *native* tool-call tokens instead of our [TOOL:] line. Ollama then
                 // fails the whole request with "tool choice is none, but model called a tool" unless tools are declared, so
                 // declare ours; parse() turns a native call back into the plain-text protocol.
@@ -193,7 +200,13 @@ enum AI {
             var text = "Error: \(err?.localizedDescription ?? "no response")"
             if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
                 if let t = parse(j) { text = t.trimmingCharacters(in: .whitespacesAndNewlines); history.append(("assistant", text)) }
-                else if let e = j["error"] as? [String: Any], let m = e["message"] as? String { text = "Error: \(m)" }
+                else if let e = j["error"] as? [String: Any], let m = e["message"] as? String {
+                    if m.contains("called a tool"), body["tools"] == nil {   // server parses native tool calls: declare ours and retry once
+                        vlog("ai retry with tools declared"); history.removeLast()
+                        DispatchQueue.main.async { forceTools = true; request(prompt, done: done); forceTools = false }; return
+                    }
+                    text = "Error: \(m)"
+                }
                 else if let e = j["error"] as? String { text = "Error: \(e)" }
                 else { text = "Error: unexpected response from \(providerName)" }
             }

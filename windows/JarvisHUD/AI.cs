@@ -131,7 +131,9 @@ static class AI {
                 url = b + "/chat/completions"; headers["Authorization"] = "Bearer " + ApiKey;
                 var msgs = new List<object> { new { role = "system", content = system } };
                 msgs.AddRange(history.Select(h => new { role = h.role, content = h.text }));
-                body = local ? new { model = Model, messages = msgs, max_tokens = 1024, reasoning_effort = "none" } : new { model = Model, messages = msgs, max_tokens = 1024 };
+                // Local servers: no hidden thinking, and declare the tools so a native tool call (Qwen 3.x) is parsed instead of
+                // failing the request with "tool choice is none, but model called a tool"; ParseReply maps it back to [TOOL:].
+                body = local ? new { model = Model, messages = msgs, max_tokens = 1024, reasoning_effort = "none", tools = Agent.NativeTools } : new { model = Model, messages = msgs, max_tokens = 1024 };
                 break;
         }
         Log.V($"ai → {ProviderName}/{Model}: {prompt[..Math.Min(120, prompt.Length)]}");
@@ -152,7 +154,15 @@ static class AI {
     static string? ParseReply(JsonNode? j) {
         try {
             switch (CurrentKind) {
-                case Kind.openai: return j?["choices"]?[0]?["message"]?["content"]?.GetValue<string>();
+                case Kind.openai: {
+                    var msg = j?["choices"]?[0]?["message"]; var content = msg?["content"]?.GetValue<string>() ?? "";
+                    var fn = (msg?["tool_calls"] as JsonArray)?.FirstOrDefault()?["function"];
+                    if (fn?["name"] != null) {
+                        var a = fn["arguments"]; var args = a is JsonValue v && v.TryGetValue<string>(out var str) ? str : (a?.ToJsonString() ?? "{}");
+                        return (content.Length > 0 ? content + "\n" : "") + $"[TOOL:{fn["name"]!.GetValue<string>()}]{args}";
+                    }
+                    return msg?["content"]?.GetValue<string>();
+                }
                 case Kind.anthropic: return string.Concat((j?["content"] as JsonArray ?? new()).Where(c => Sys.S(c, "type") == "text").Select(c => Sys.S(c, "text")));
                 case Kind.gemini: return j?["candidates"]?[0]?["content"]?["parts"]?[0]?["text"]?.GetValue<string>();
             }

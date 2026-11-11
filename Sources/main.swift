@@ -168,7 +168,13 @@ enum AI {
             req = URLRequest(url: URL(string: b + "/chat/completions")!)
             req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             body = ["model": model, "messages": [["role": "system", "content": system]] + history.map { ["role": $0.role, "content": $0.text] }, "max_tokens": 1024]
-            if localhost { body["reasoning_effort"] = "none" }   // Ollama/LM Studio: stop Qwen 3 & co. spending the whole budget on hidden thinking
+            if localhost {
+                body["reasoning_effort"] = "none"   // Ollama/LM Studio: stop Qwen 3 & co. spending the whole budget on hidden thinking
+                // Qwen 3.x and friends sometimes emit their *native* tool-call tokens instead of our [TOOL:] line. Ollama then
+                // fails the whole request with "tool choice is none, but model called a tool" unless tools are declared, so
+                // declare ours; parse() turns a native call back into the plain-text protocol.
+                body["tools"] = Agent.nativeTools
+            }
         case .anthropic:
             req = URLRequest(url: URL(string: b + "/messages")!)
             req.setValue(apiKey, forHTTPHeaderField: "x-api-key"); req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -198,7 +204,15 @@ enum AI {
     }
     static func parse(_ j: [String: Any]) -> String? {
         switch kind {
-        case .openai: return ((j["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String
+        case .openai:
+            guard let msg = (j["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any] else { return nil }
+            let content = (msg["content"] as? String) ?? ""
+            if let call = (msg["tool_calls"] as? [[String: Any]])?.first, let fn = call["function"] as? [String: Any], let name = fn["name"] as? String {
+                var args = (fn["arguments"] as? String) ?? "{}"
+                if let o = fn["arguments"] as? [String: Any], let d = try? JSONSerialization.data(withJSONObject: o) { args = String(data: d, encoding: .utf8) ?? "{}" }
+                return (content.isEmpty ? "" : content + "\n") + "[TOOL:\(name)]\(args)"
+            }
+            return msg["content"] as? String
         case .anthropic: return (j["content"] as? [[String: Any]])?.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined()
         case .gemini:
             guard let c = (j["candidates"] as? [[String: Any]])?.first?["content"] as? [String: Any] else { return nil }
@@ -409,6 +423,14 @@ enum Agent {
             return Cleaner.describe(ids: Agent.ids(args)) ?? "Nothing cleanable in that request. Continue?"
         default: return nil
         }
+    }
+
+    /// OpenAI-style function declarations derived from toolDoc, for local servers that parse native tool calls.
+    static let nativeTools: [[String: Any]] = toolDoc.split(separator: "\n").compactMap { line in
+        let l = line.trimmingCharacters(in: .whitespaces); guard l.hasPrefix("- ") else { return nil }
+        let name = String(l.dropFirst(2).prefix { $0 != " " }); guard toolNames.contains(name) else { return nil }
+        return ["type": "function", "function": ["name": name, "description": String(l.dropFirst(2 + name.count).prefix(300)),
+                                                 "parameters": ["type": "object", "properties": [String: Any](), "additionalProperties": true]]]
     }
 
     /// Parse "[TOOL:name]{json}" from a reply.

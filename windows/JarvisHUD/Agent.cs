@@ -8,6 +8,11 @@ static class Agent {
     public const int MaxSteps = 8;
     public static bool ConfirmActions { get => Settings.GetBool("confirmActions", true); set => Settings.Set("confirmActions", value); }
     public static readonly string[] ToolNames = { "shell", "open", "read_file", "write_file", "search", "telemetry", "clipboard", "recall", "remember", "forget", "disk_scan", "disk_clean", "diagnose", "app_check", "logs", "find_app", "app_vet", "install_app", "app_docs", "malware_scan", "quarantine_item" };
+    /// OpenAI-style function declarations derived from ToolDoc, for local servers that parse native tool calls.
+    public static readonly object[] NativeTools = ToolDoc.Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith("- "))
+        .Select(l => (name: l[2..].Split(' ')[0], line: l)).Where(t => ToolNames.Contains(t.name))
+        .Select(t => (object)new { type = "function", function = new { name = t.name, description = t.line[(2 + t.name.Length)..].Trim() is var d && d.Length > 300 ? d[..300] : t.line[(2 + t.name.Length)..].Trim(),
+                                                                       parameters = new Dictionary<string, object> { ["type"] = "object", ["properties"] = new Dictionary<string, object>(), ["additionalProperties"] = true } } }).ToArray();
     public const string ToolDoc = """
 You are an AGENT on this Windows PC: you can act, not just talk. To use a tool, output a line in exactly this form (one tool per reply, nothing else on that line):
 [TOOL:name]{"arg": "value"}

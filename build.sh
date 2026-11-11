@@ -12,8 +12,8 @@ if [ ! -f build/art/AppIcon.icns ]; then
   iconutil -c icns build/art/AppIcon.iconset -o build/art/AppIcon.icns
 fi
 cp build/art/AppIcon.icns $APP/Contents/Resources/
-swiftc -O -framework Cocoa -framework QuartzCore -framework IOKit -framework Speech -framework AVFoundation Sources/*.swift -o $APP/Contents/MacOS/JarvisHUD
-swiftc -O -framework IOKit Sources/Stats.swift Helper/main.swift -o $APP/Contents/MacOS/jarvisfan
+swiftc -O -target arm64-apple-macos15.0 -framework Cocoa -framework QuartzCore -framework IOKit -framework Speech -framework AVFoundation Sources/*.swift -o $APP/Contents/MacOS/JarvisHUD
+swiftc -O -target arm64-apple-macos15.0 -framework IOKit Sources/Stats.swift Helper/main.swift -o $APP/Contents/MacOS/jarvisfan
 cp Info.plist $APP/Contents/
 codesign --force --sign "$SIGN" $APP/Contents/MacOS/jarvisfan
 codesign --force --options runtime --entitlements entitlements.plist --sign "$SIGN" $APP

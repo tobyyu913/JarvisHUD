@@ -738,12 +738,70 @@ final class HUDPanel: NSPanel {
 }
 
 // MARK: - App
+private struct HUDShortcut: Codable {
+    static let preferenceKey = "hudShortcut"
+    static let standard = HUDShortcut(code: 49, modifiers: CGEventFlags.maskAlternate.rawValue, keyName: "Space")
+    static let telemetry = HUDShortcut(code: 49, modifiers: CGEventFlags([.maskControl, .maskAlternate]).rawValue, keyName: "Space")
+    static let modifierSymbols: [(NSEvent.ModifierFlags, String)] = [
+        (.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")
+    ]
+    static let modifierMask: CGEventFlags = [.maskControl, .maskAlternate, .maskShift, .maskCommand]
+
+    let code: Int64
+    let modifiers: UInt64
+    let keyName: String
+
+    var title: String {
+        let flags = NSEvent.ModifierFlags(rawValue: UInt(modifiers))
+        return Self.modifierSymbols.filter { flags.contains($0.0) }.map { $0.1 }.joined() + " " + keyName
+    }
+
+    func matches(code: Int64, modifiers: UInt64) -> Bool {
+        self.code == code && self.modifiers == modifiers
+    }
+
+    static func capture(_ event: NSEvent) -> HUDShortcut? {
+        let modifiers = UInt64(event.modifierFlags.rawValue) & modifierMask.rawValue
+        guard modifiers != 0 else { return nil }
+        let characters = event.charactersIgnoringModifiers ?? ""
+        let keyName: String
+        switch characters {
+        case " ": keyName = "Space"
+        case "\r": keyName = "Return"
+        case "\t", "\u{19}": keyName = "Tab"
+        case "\u{1b}": keyName = "Esc"
+        case "\u{7f}": keyName = "Delete"
+        case "\u{f700}": keyName = "↑"
+        case "\u{f701}": keyName = "↓"
+        case "\u{f702}": keyName = "←"
+        case "\u{f703}": keyName = "→"
+        default:
+            if let scalar = characters.unicodeScalars.first, (0xf704...0xf726).contains(scalar.value) {
+                keyName = "F\(scalar.value - 0xf704 + 1)"
+            } else if let scalar = characters.unicodeScalars.first,
+                      !CharacterSet.controlCharacters.contains(scalar),
+                      scalar.properties.generalCategory != .privateUse {
+                keyName = characters.uppercased()
+            } else {
+                keyName = "Key \(event.keyCode)"
+            }
+        }
+        return HUDShortcut(code: Int64(event.keyCode), modifiers: modifiers, keyName: keyName)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var panel: HUDPanel?
     var overlay: OverlayWindow?
     var tap: CFMachPort?
     var active = false
+    private var recordingHUDShortcut = false
+    private var hudShortcut: HUDShortcut = {
+        guard let data = UserDefaults.standard.data(forKey: HUDShortcut.preferenceKey),
+              let shortcut = try? JSONDecoder().decode(HUDShortcut.self, from: data) else { return .standard }
+        return shortcut
+    }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -783,7 +841,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func buildMenu() {
         let m = NSMenu()
-        m.addItem(withTitle: "Toggle HUD   (⌥ Space)", action: #selector(toggle), keyEquivalent: "")
+        m.addItem(withTitle: "Toggle HUD   (\(hudShortcut.title))", action: #selector(toggle), keyEquivalent: "")
+        m.addItem(withTitle: "Summon Shortcut…", action: #selector(setHUDShortcut), keyEquivalent: "")
         m.addItem(withTitle: "Toggle Telemetry   (⌃⌥ Space)", action: #selector(toggleOverlay), keyEquivalent: "")
         let fan = NSMenu(title: "Fans"); let fanItem = NSMenuItem(title: "Fans", action: nil, keyEquivalent: ""); fanItem.submenu = fan; m.addItem(fanItem)
         fan.addItem(withTitle: "Automatic", action: #selector(fanAuto), keyEquivalent: "")
@@ -862,6 +921,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func setProvider() { providerDialog.run(); buildMenu() }
     @objc func clear() { AI.history = []; panel?.hud.output.string = "" }
 
+    @objc func setHUDShortcut() {
+        let alert = NSAlert()
+        alert.messageText = "Summon Shortcut"
+        alert.informativeText = "Press a key with Command, Control, Option, or Shift."
+        let label = NSTextField(labelWithString: "Current shortcut: \(hudShortcut.title)")
+        label.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = label
+        let save = alert.addButton(withTitle: "Save")
+        save.isEnabled = false
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Restore Default")
+
+        var selection: HUDShortcut?
+        let window = alert.window
+        recordingHUDShortcut = true
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.window === window, let shortcut = HUDShortcut.capture(event) else { return event }
+            guard !event.isARepeat else { return nil }
+            if HUDShortcut.telemetry.matches(code: shortcut.code, modifiers: shortcut.modifiers) {
+                selection = nil
+                save.isEnabled = false
+                label.stringValue = "\(shortcut.title) is used by Toggle Telemetry."
+            } else {
+                selection = shortcut
+                save.isEnabled = true
+                label.stringValue = shortcut.title
+            }
+            return nil
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if let monitor = monitor { NSEvent.removeMonitor(monitor) }
+        recordingHUDShortcut = false
+
+        if response == .alertThirdButtonReturn {
+            hudShortcut = .standard
+            UserDefaults.standard.removeObject(forKey: HUDShortcut.preferenceKey)
+        } else if response == .alertFirstButtonReturn, let selection = selection,
+                  let data = try? JSONEncoder().encode(selection) {
+            hudShortcut = selection
+            UserDefaults.standard.set(data, forKey: HUDShortcut.preferenceKey)
+        }
+        buildMenu()
+    }
+
     func installTap() {
         AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
         let mask: CGEventMask = 1 << CGEventType.keyDown.rawValue
@@ -870,13 +974,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                 if let t = me.tap { CGEvent.tapEnable(tap: t, enable: true) }; return Unmanaged.passUnretained(event)
             }
-            // ⌥ Space (keycode 49) toggles the HUD. F5 is intentionally left alone.
+            guard !me.recordingHUDShortcut else { return Unmanaged.passUnretained(event) }
             let code = event.getIntegerValueField(.keyboardEventKeycode)
-            let flags = event.flags.intersection([.maskAlternate, .maskCommand, .maskControl, .maskShift])
-            if code == 49 && flags == .maskAlternate {
-                DispatchQueue.main.async { me.toggle() }; return nil
+            let modifiers = event.flags.intersection(HUDShortcut.modifierMask).rawValue
+            if me.hudShortcut.matches(code: code, modifiers: modifiers) {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                    DispatchQueue.main.async { me.toggle() }
+                }
+                return nil
             }
-            if code == 49 && flags == [.maskAlternate, .maskControl] {
+            if HUDShortcut.telemetry.matches(code: code, modifiers: modifiers) {
                 DispatchQueue.main.async { me.toggleOverlay() }; return nil
             }
             return Unmanaged.passUnretained(event)

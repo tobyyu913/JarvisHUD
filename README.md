@@ -15,10 +15,12 @@
 
 | Shortcut | Action |
 |---|---|
-| **⌥ Space** | Summon JARVIS. A glowing ring spins up in the top-right corner, a panel expands leftward, and you type. Press again or hit Esc to dismiss. |
+| **⌥ Space** (default) | Summon JARVIS. A glowing ring spins up in the top-right corner, a panel expands leftward, and you type. Press again or hit Esc to dismiss. |
 | **⌃⌥ Space** | Toggle the telemetry overlay. Live stats are painted around the edges of the screen. |
 | **"Jarvis, …"** | Wake word. While listening (automatically on AC power, or forced on from the menu) just say *Jarvis* followed by your question. The HUD pops up, your words appear as you speak, and the question is sent when you pause. |
 | **◎ menu** | AI provider, web search, wake word, memory, risky-action confirmation, fan control, clear conversation, quit. |
+
+On macOS, open **◎ → Summon Shortcut…**, press a key combination, and click **Save**. Use **Restore Default** to switch back to **⌥ Space**.
 
 ### JARVIS is an agent
 

@@ -1,18 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>JarvisHUD</string>
-<key>CFBundleIdentifier</key><string>com.toby.jarvishud</string>
-<key>CFBundleExecutable</key><string>JarvisHUD</string>
-<key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>1.9.2</string>
-<key>LSMinimumSystemVersion</key><string>15.0</string>
-<key>LSUIElement</key><true/>
-<key>NSHighResolutionCapable</key><true/>
-<key>NSMicrophoneUsageDescription</key><string>JarvisHUD listens for the wake word "Jarvis" so you can talk to it hands-free.</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>JarvisHUD transcribes speech on-device to detect "Jarvis" and hear your question.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>JARVIS controls other apps (Reminders, Calendar, Finder, Music…) when you ask him to.</string>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>JarvisHUD</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.toby.jarvishud</string>
+	<key>CFBundleName</key>
+	<string>JarvisHUD</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.9.3</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>JARVIS controls other apps (Reminders, Calendar, Finder, Music…) when you ask him to.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>JarvisHUD listens for the wake word "Jarvis" so you can talk to it hands-free.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>JarvisHUD transcribes speech on-device to detect "Jarvis" and hear your question.</string>
+</dict>
+</plist>
